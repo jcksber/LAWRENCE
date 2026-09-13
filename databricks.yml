@@ -1,0 +1,22 @@
+bundle:
+  name: lawrence
+
+include:
+  - resources/*.yml
+
+# TODO: fill in your workspace host(s), same pattern as
+# blockchain-data-engineering-project.
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://<your-workspace-host>.cloud.databricks.com
+
+  prod:
+    mode: production
+    workspace:
+      host: https://<your-workspace-host>.cloud.databricks.com
+      # `root_path` is required for `mode: production` — see the note you
+      # already hit on the blockchain-de-project bundle.
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}

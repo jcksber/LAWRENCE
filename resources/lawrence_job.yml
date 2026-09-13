@@ -1,0 +1,20 @@
+resources:
+  jobs:
+    lawrence_bronze_ingestion:
+      name: lawrence_bronze_dex_ingestion
+      # Phase 1 scope: DEX-only Bronze ingestion, multi-venue/multi-chain
+      # (see notebook 00's VENUES list — add a chain/DEX there, not a new
+      # task here). Add a separate task for the social-data Bronze source
+      # once Phase 2 starts.
+      schedule:
+        quartz_cron_expression: "0 */15 * * * ?" # every 15 min — tune once
+                                                  # you know real venue volume
+        timezone_id: "UTC"
+        pause_status: PAUSED # unpause once notebook 00 is validated in dev
+
+      tasks:
+        - task_key: bronze_dex_pool_events
+          notebook_task:
+            notebook_path: ../notebooks/00_bronze_dex_ingestion.py
+          # new_cluster / existing_cluster_id: fill in to match your
+          # blockchain-de-project job cluster config
