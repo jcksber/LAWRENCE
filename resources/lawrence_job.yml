@@ -10,7 +10,9 @@ resources:
         quartz_cron_expression: "0 */15 * * * ?" # every 15 min — tune once
                                                   # you know real venue volume
         timezone_id: "UTC"
-        pause_status: PAUSED # unpause once notebook 00 is validated in dev
+        pause_status: UNPAUSED # both Bronze and Silver validated end-to-end;
+                                 # running on schedule to start accumulating
+                                 # real history for Gold to train on
 
       tasks:
         - task_key: bronze_dex_pool_events
