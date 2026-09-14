@@ -81,6 +81,46 @@ longer tied to a pool-creation timestamp specifically:
   window being predicted, and leaking it in is the #1 way these models look
   great in backtest and fail live.
 
+## Gold tables: separate for entry and exit
+
+`lawrence.gold.entry_candidates` and `lawrence.gold.exit_candidates` are
+two physically separate tables, not one table with a row-type flag --
+mirrors the same reasoning already used to keep entry/exit as separate
+*models* (different candidate-universe sizes, different serving-time query
+shapes, different latency/cost budgets). A combined table wouldn't actually
+avoid the split: every serving-time read would still filter on row type,
+you'd just be filtering a column instead of picking a table, while also
+carrying permanently-null position-context columns on every entry row.
+
+What *is* shared: the underlying feature computation (trailing volume,
+buy/sell ratio, price action from Silver) lives in one function, called by
+both tables' build logic. No duplicated feature logic, still two tables.
+
+## Exit label: training data via simulated entries
+
+Exit's position-context features (entry price, unrealized return, holding
+duration) need a "when did I enter" — but there's no real position history
+yet (that only exists once LAWRENCE is actually paper-trading, Phase 4).
+For v1 training data, entries are simulated: for a candidate token at
+assessment point `T`, manufacture a synthetic entry at `T - h`:
+
+```
+entry_price       = price_at(T - h)
+unrealized_return = (price_at(T) - price_at(T - h)) / price_at(T - h)
+holding_duration  = h
+y_exit(T)         = (price_at(T + HOLD_MINUTES) - price_at(T)) / price_at(T)   # unchanged
+```
+
+`h` is sampled from a grid (placeholder, tune later) independently of
+whatever the entry model's actual trigger logic would have decided --
+confirmed as a deliberate simplification, not an oversight: entry and exit
+training data are generated independently, not from a coupled simulation
+where "exit training only samples h values the entry model would actually
+have acted on." This is standard hindsight relabeling (any point along a
+token's real price trajectory can retroactively serve as "if I'd bought
+here") and is explicitly a training-time stand-in -- real paper-trading
+position history is the ground truth this substitutes for until it exists.
+
 ## Open questions to revisit once real data lands
 
 - Training sample cadence: sample `T` every 15 min per token to match an

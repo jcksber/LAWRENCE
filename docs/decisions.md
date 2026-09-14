@@ -86,3 +86,18 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   produces two Silver rows (see `docs/silver_spec.md`). Wired into
   `resources/lawrence_job.yml` as a task depending on the Bronze task, so it
   runs right after Bronze each cycle.
+- **Gold: separate tables for entry/exit, shared feature code.**
+  `lawrence.gold.entry_candidates` and `lawrence.gold.exit_candidates` are
+  physically separate tables (not one table with a row-type flag) — same
+  reasoning already used to keep entry/exit as separate models. Trailing-
+  activity feature computation (volume, buy/sell ratio, price action from
+  Silver) is shared code, called by both tables' build logic.
+- **Exit label training data uses simulated entries, sampled
+  independently of entry-model logic.** No real position history exists
+  yet (that needs live paper trading, Phase 4), so exit training rows
+  manufacture a synthetic entry at `T - h` and derive entry_price/
+  unrealized_return/holding_duration from it. `h` is sampled independently
+  — not constrained to values the entry model would actually have
+  triggered on. Explicit simplification, not an oversight: this is
+  standard hindsight relabeling, and a stand-in for real position history
+  until Phase 4 provides it. See `docs/label_spec.md`.
