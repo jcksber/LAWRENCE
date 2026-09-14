@@ -40,3 +40,37 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   cross-contamination -- confirms the `Venue` filter is actually scoping
   correctly, not just failing to error. Job stays `pause_status: PAUSED`
   until intentionally switched to the automated 15-min schedule.
+- **Social-data Bronze source deferred indefinitely (cost), not just "until
+  Phase 2."** Santiment came out as the right vendor for it (see chat), but
+  it's a real $49-249/mo cost Jack isn't committing to yet. Proceeding
+  straight to Silver/Gold construction (`docs/game_plan.md` Phase 2) on the
+  DEX-only Bronze data already validated -- model features will be
+  financial-only until/unless the social source gets added later. Note:
+  README's informal "Phase 1 = DEX ingestion, Phase 2 = social ingestion"
+  phrasing is a different numbering than `game_plan.md`'s master Phase
+  0-6 sequence -- game_plan.md's numbering is the authoritative one going
+  forward to avoid confusion between the two.
+- **Entry and exit are separate models; not gated on pool creation.**
+  Corrected an implicit assumption that LAWRENCE only ever decides once per
+  token, at launch (same shape as BIA's reflex, just smarter). Instead:
+  LAWRENCE assesses whatever it's watching on a recurring cadence, and
+  entry ("is this worth buying now," wide candidate set) and exit ("should
+  I sell what I hold," small candidate set, needs position context) are
+  split into separate labels/models so each can be tuned for its own
+  latency/cost budget rather than one model serving both cheaply-at-scale
+  and quickly-on-a-small-set. See `docs/label_spec.md` v2.
+- **Cadence is a deployment/cost parameter, not a label/code parameter.**
+  15 min was always just an example for the Bronze job's schedule -- the
+  label and feature definitions are written generically over an assessment
+  timestamp `T`, identical whether LAWRENCE runs every 15 min or
+  continuously. Only infra cost changes with cadence, never correctness.
+- **Bronze fee/gas fields added, verified against live data first.** Solana:
+  `Transaction { Fee FeeInUSD }` nests directly, no join. EVM: no direct
+  `Transaction.Fee` under `DEXTrades` — requires `joinTransactions(join:
+  inner, Transaction_Hash: Transaction_Hash) { Fee { SenderFee
+  SenderFeeInUSD } }`, confirmed working on the existing `DEXTrades` root
+  (no migration to `DEXTradeByTokens` needed). Both values are native-
+  currency decimals (SOL/ETH), not raw base units — so the column is named
+  `chain_native_fee`, not `chain_native_fee_raw` as first drafted in
+  `docs/silver_spec.md`. Purpose: downstream competition/MEV-heat proxy and
+  realistic backtest cost simulation. See `docs/silver_spec.md`.

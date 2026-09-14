@@ -1,44 +1,102 @@
-# Label spec (v1) — regression target
+# Label spec (v2) — entry and exit are separate models, any cadence
 
-## Definition
+Supersedes v1's single "return from pool creation" framing. Two changes,
+both from a real design conversation, not implementation detail:
+
+1. **Not gated on pool creation.** LAWRENCE assesses whatever it's watching
+   on a recurring cadence, not just once at launch. Pool creation is just
+   the first possible assessment point for a token, not the only one.
+2. **Entry and exit are separate models**, each with its own label and
+   feature set — not one regression reused for both. They have different
+   decision costs (entry scans a wide candidate set; exit only evaluates
+   whatever's actually held) and different feature needs (exit needs
+   position context entry doesn't), so keeping them separate lets each be
+   tuned for its own latency/cost budget instead of forcing one model to
+   serve both cheaply-at-scale and quickly-on-a-small-set at once.
+
+## Core idea: assessment timestamp `T`
+
+Both labels are defined relative to an **assessment timestamp `T`** — any
+point in a token's trading life, not just its first trade. In training,
+`T` is sampled across each token's history (frequency TBD, see below); in
+production, `T` is "now," each time LAWRENCE runs.
+
+**Cadence (how often `T` recurs — 15 min, 1 min, streaming/continuous) is a
+deployment/cost parameter, not something baked into the label or feature
+code.** The label definition is identical whether LAWRENCE runs every 15
+minutes or every second; only the infra cost changes. Nothing in Silver/
+Gold or the model should hardcode a specific interval.
+
+## Entry label
 
 ```
-y = (price_at_exit - price_at_entry) / price_at_entry
+y_entry(T) = (price_at(T + HOLD_MINUTES) - price_at(T)) / price_at(T)
 ```
 
-- **entry**: first price at which a buy would realistically fill after pool
-  creation (i.e. after `init`-style pool-creation event) — pulled from actual
-  swap data, not the theoretical initial pool ratio, so it reflects real
-  slippage on entry.
-- **exit**: price at `entry_timestamp + HOLD_MINUTES`. `HOLD_MINUTES` starts as
-  a placeholder (60) and should be re-derived empirically once Bronze data is
-  flowing — plot the price-decay / pump curve distribution for a sample of
-  launches and pick a hold window that separates "still finding out if this
-  is a rug" from "outcome is basically decided."
-- If liquidity is pulled (rug) before `exit`, clamp `y` at the realized loss
-  at the liquidity-pull event rather than reading a stale/zero price — a
-  token with no liquidity has no meaningful "price."
+- Candidate universe at `T`: tokens with at least one trade in a trailing
+  activity window (placeholder: 24-72h — wide enough to catch tokens that
+  are still "alive," narrow enough not to keep scoring dead ones forever;
+  tune once real activity-decay curves are visible in Silver/Gold).
+- `price_at(T)`: actual fillable price from real swap data at/near `T`, not
+  a theoretical pool ratio — same slippage-aware logic as v1.
+- Same rug/no-liquidity clamping as v1: if liquidity is pulled before
+  `T + HOLD_MINUTES`, clamp `y_entry` at the realized loss at the pull
+  event rather than reading a stale price.
+- Features: trailing trade activity (liquidity depth, volume, buy/sell
+  ratio, holder concentration, deployer wallet history) and, later, social
+  signal — all snapshotted at-or-before `T`. No position context (there's
+  no position yet).
 
-## Point-in-time correctness (read this before writing any feature)
+## Exit label
 
-Every feature used to predict `y` must be computable using **only** data
-timestamped at or before `entry_timestamp`. Concretely:
+```
+y_exit(T) = (price_at(T + HOLD_MINUTES) - price_at(T)) / price_at(T)
+```
 
-- Liquidity depth, holder count, deployer wallet history: snapshot as of
-  `entry_timestamp`, never a later value.
-- Social signal (Phase 2): only posts/mentions timestamped before
-  `entry_timestamp`.
-- No feature may be derived from anything that happened between
-  `entry_timestamp` and `exit_timestamp` — that's the window we're trying to
-  predict, and leaking it in is the single most common way these models look
+Same forward-return shape as entry — deliberately, so "hold vs. sell now"
+reduces to "is the expected forward return from here still worth the
+risk," using the same kind of signal the entry model already trusts. What's
+different is the **candidate universe and feature set**:
+
+- Candidate universe at `T`: only tokens LAWRENCE currently holds a
+  position in (small set, by construction) — never the full market.
+- Features: everything the entry model uses, **plus position context**:
+  entry price, unrealized return so far, holding duration, and (once we
+  build it) whatever risk-budget state the decision agent is tracking.
+  These matter for exit in a way they don't for entry — a token trading
+  flat is a "pass" for entry but a live P&L decision for something already
+  held.
+
+## Point-in-time correctness (generalized from v1 — read before writing any feature)
+
+Every feature for either label must be computable using **only** data
+timestamped at or before its `T`. This is the same rule as v1, just no
+longer tied to a pool-creation timestamp specifically:
+
+- Liquidity depth, holder count, deployer wallet history, position context:
+  snapshot as of `T`, never later.
+- Social signal (deferred — see decisions.md): only posts/mentions
+  timestamped before `T`.
+- No feature may see anything in `(T, T + HOLD_MINUTES]` — that's the
+  window being predicted, and leaking it in is the #1 way these models look
   great in backtest and fail live.
 
 ## Open questions to revisit once real data lands
 
+- Training sample cadence: sample `T` every 15 min per token to match an
+  assumed production cadence, or denser/coarser? (Matters for train/serve
+  skew if production cadence ever changes — worth deciding whether training
+  data should be cadence-independent, e.g. sampled densely and then
+  resampled to whatever cadence is actually deployed.)
+- Is a single global `HOLD_MINUTES` right for both labels, or should exit
+  use a shorter horizon than entry (faster-reacting risk management vs.
+  slower-reacting opportunity scanning)?
 - Is a single global `HOLD_MINUTES` right, or should it vary by initial
-  liquidity size (thinner pools may resolve faster)?
-- How do we handle tokens with a trading halt / no volume before `exit`
-  (illiquid exit — can't actually sell at the "price")? Likely: model exit
-  price using actual executable swap size, not last-trade price.
+  liquidity size (thinner pools may resolve faster)? (carried over from v1)
+- How do we handle tokens with a trading halt / no volume before
+  `T + HOLD_MINUTES` (illiquid exit — can't actually sell at the "price")?
+  Likely: model exit price using actual executable swap size, not
+  last-trade price. (carried over from v1)
 - Outlier handling for extreme (>100x) winners — winsorize `y` for training
-  stability, but keep the raw value for backtest P&L simulation.
+  stability, keep the raw value for backtest P&L simulation. (carried over
+  from v1)

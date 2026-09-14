@@ -35,9 +35,6 @@ VENUES: list[Venue] = [
         name="uniswap_v3_base",
         chain_family=ChainFamily.EVM,
         network="base",
-        # TODO: confirm the right filter address for your target
-        # factory/router — placeholder, verify against current Bitquery
-        # EVM DEXTrades docs before relying on this.
         dex_program_or_address="0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
     ),
 ]
@@ -80,6 +77,17 @@ def _normalize(venue: Venue, t: dict) -> Row:
     is_evm = venue.chain_family == ChainFamily.EVM
     buy_currency = t["Trade"]["Buy"]["Currency"]
     sell_currency = t["Trade"]["Sell"]["Currency"]
+    # Fee shape differs by chain: EVM has no direct Transaction.Fee under
+    # DEXTrades, so it comes via a joinTransactions join; Solana's Fee is a
+    # plain Transaction sibling field. Both are native-currency decimals
+    # (SOL / ETH), not raw base units (lamports / wei) -- verified against
+    # live Bitquery responses, see docs/decisions.md.
+    if is_evm:
+        fee = t["joinTransactions"]["Fee"]
+        tx_fee_native, tx_fee_usd = fee["SenderFee"], fee["SenderFeeInUSD"]
+    else:
+        tx_fee_native = t["Transaction"]["Fee"]
+        tx_fee_usd = t["Transaction"]["FeeInUSD"]
     return Row(
         chain_family=venue.chain_family.value,
         network=venue.network,  # None for non-EVM
@@ -95,6 +103,8 @@ def _normalize(venue: Venue, t: dict) -> Row:
         sell_symbol=sell_currency["Symbol"],
         sell_amount=t["Trade"]["Sell"]["Amount"],
         sell_amount_usd=t["Trade"]["Sell"]["AmountInUSD"],
+        tx_fee_native=tx_fee_native,
+        tx_fee_usd=tx_fee_usd,
         raw_json=json.dumps(t),
         source="bitquery",
         ingested_at=ingested_at,

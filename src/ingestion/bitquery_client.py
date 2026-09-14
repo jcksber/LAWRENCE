@@ -72,6 +72,9 @@ query NewPoolTrades($network: evm_network!, $program: String!, $since: DateTime!
         Sell { Currency { SmartContract Symbol } Amount AmountInUSD }
         Dex  { OwnerAddress ProtocolName }
       }
+      joinTransactions(join: inner, Transaction_Hash: Transaction_Hash) {
+        Fee { SenderFee SenderFeeInUSD }
+      }
     }
   }
 }
@@ -89,7 +92,7 @@ query NewPoolTrades($program: String!, $since: DateTime!, $limit: Int!) {
       }
     ) {
       Block { Time }
-      Transaction { Signature }
+      Transaction { Signature Fee FeeInUSD }
       Trade {
         Buy  { Currency { MintAddress Symbol } Amount AmountInUSD }
         Sell { Currency { MintAddress Symbol } Amount AmountInUSD }
