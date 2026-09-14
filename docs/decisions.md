@@ -25,3 +25,18 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
 - **Success metric = risk-adjusted, not a guarantee.** Tracking EV/trade,
   Sharpe/Sortino, hit rate, max drawdown — see `docs/game_plan.md` §2 for
   why "guarantee >50% average profit" isn't the target.
+- **Bitquery auth: use a "Manual"-type Application token, not client_credentials.**
+  The raw dashboard API key is not a usable bearer token by itself (returns
+  401). Fix: create an Application under Authorization -> Applications
+  (used name `lawrence-ingestion`) -- its "Manual" type shows `secret: n/a`
+  (no client_id/client_secret flow) but issues tokens via its own "Tokens"
+  UI with a 1-year lifespan, long enough that no OAuth refresh logic is
+  needed in `bitquery_client.py`. That generated token is what's stored as
+  the `bitquery_api_key` Databricks secret.
+- **Phase 1 ingestion validated end-to-end (2026-09-14).** Ran notebook 00
+  manually against both starting venues: `raydium_v4` -> `dex_protocol =
+  raydium_amm`, `uniswap_v3_base` -> `dex_protocol = uniswap_v3`, 1000 rows
+  each, each venue showing exactly one protocol label with no
+  cross-contamination -- confirms the `Venue` filter is actually scoping
+  correctly, not just failing to error. Job stays `pause_status: PAUSED`
+  until intentionally switched to the automated 15-min schedule.

@@ -20,9 +20,6 @@ from ingestion.bitquery_client import BitqueryClient, ChainFamily, Venue  # noqa
 
 # COMMAND ----------
 
-# TODO: create this secret scope first —
-#   databricks secrets create-scope lawrence
-#   databricks secrets put-secret lawrence bitquery_api_key
 API_KEY = dbutils.secrets.get(scope="lawrence", key="bitquery_api_key")
 
 # Starting venues — deliberately more than one chain/DEX from day one, to

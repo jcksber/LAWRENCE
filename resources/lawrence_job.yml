@@ -16,5 +16,4 @@ resources:
         - task_key: bronze_dex_pool_events
           notebook_task:
             notebook_path: ../notebooks/00_bronze_dex_ingestion.py
-          # new_cluster / existing_cluster_id: fill in to match your
-          # blockchain-de-project job cluster config
+          # new_cluster / existing_cluster_id: fill in when not serverless
