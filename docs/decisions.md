@@ -74,3 +74,15 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   `chain_native_fee`, not `chain_native_fee_raw` as first drafted in
   `docs/silver_spec.md`. Purpose: downstream competition/MEV-heat proxy and
   realistic backtest cost simulation. See `docs/silver_spec.md`.
+- **Silver layer implemented (`lawrence.silver.token_trades`).** Row-shaping
+  logic (quote-asset denylist applied per side, price/amount normalization,
+  fee passthrough) lives in `src/features/silver_token_trades.py` — plain
+  Python, no PySpark, unit-tested in `tests/test_silver_token_trades.py` so
+  it actually runs in CI (unlike the Databricks notebooks, which need a
+  Databricks runtime). `notebooks/01_silver_token_trades.py` is the Spark
+  glue: bounded lookback read from Bronze, MERGE into Silver keyed on
+  `(dex_venue, tx_hash, token_id)` — the `token_id` is required, not just
+  `(dex_venue, tx_hash)`, because a trade between two non-quote tokens
+  produces two Silver rows (see `docs/silver_spec.md`). Wired into
+  `resources/lawrence_job.yml` as a task depending on the Bronze task, so it
+  runs right after Bronze each cycle.

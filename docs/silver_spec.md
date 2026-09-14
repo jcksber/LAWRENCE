@@ -9,8 +9,16 @@ windows-aggregates for features and looks up for the entry/exit labels in
 
 The Bronze job re-pulls a 20-minute lookback every 15 minutes (deliberate
 overlap so a slow run doesn't lose data) -- so the same trade (`tx_hash`)
-can land in Bronze more than once across runs. That's fine; Silver dedupes
-on `(dex_venue, tx_hash)`, not Bronze.
+can land in Bronze more than once across runs. That's fine; Silver dedupes,
+not Bronze.
+
+**Dedup key is `(dex_venue, tx_hash, token_id)`, not just `(dex_venue,
+tx_hash)`.** A single trade normally produces one Silver row, but if
+neither side of a swap is a quote asset (two candidate tokens traded
+directly against each other), it produces two -- one per side, each
+treating the other as its quote (see "Why only one side of each trade"
+below). `token_id` is what disambiguates those two rows for the same
+`tx_hash`.
 
 ## Why only one side of each trade
 
@@ -18,7 +26,22 @@ A swap is always token A <-> token B. For a new/candidate token traded
 against SOL/WETH/USDC, we need *that* token's USD price, not raw two-sided
 amounts. v1 approach: an explicit small per-chain denylist of quote/
 reference assets (SOL, WSOL, USDC, USDT, WETH, ETH, ...) -- whichever side
-of a trade isn't on that list is "the token of interest" for that row.
+of a trade isn't on that list is "the token of interest" for that row,
+applied per side rather than per trade:
+
+- one side on the denylist, one not (the common case): one row
+- both sides on the denylist (e.g. a USDC/WSOL swap): zero rows -- nothing
+  to score
+- neither side on the denylist (two candidate tokens traded directly
+  against each other): two rows
+
+Implemented in `src/features/silver_token_trades.py::to_silver_rows()`
+(pure Python, no PySpark -- unit-tested in
+`tests/test_silver_token_trades.py`, runs in CI); orchestrated by
+`notebooks/01_silver_token_trades.py`, which reads a bounded Bronze
+lookback and MERGEs into Silver on the dedup key above so overlapping runs
+are a no-op, not a duplicate. Wired into `resources/lawrence_job.yml` as a
+task that runs right after Bronze each cycle.
 
 ## Schema
 

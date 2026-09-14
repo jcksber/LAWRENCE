@@ -17,3 +17,11 @@ resources:
           notebook_task:
             notebook_path: ../notebooks/00_bronze_dex_ingestion.py
           # new_cluster / existing_cluster_id: fill in when not serverless
+        - task_key: silver_token_trades
+          depends_on:
+            - task_key: bronze_dex_pool_events
+          notebook_task:
+            notebook_path: ../notebooks/01_silver_token_trades.py
+          # Runs right after Bronze each cycle; its own LOOKBACK_MINUTES
+          # (see notebook 01) is what makes a 15-min cadence safe, not this
+          # depends_on -- it only orders the two tasks within one run.
