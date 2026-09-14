@@ -101,3 +101,20 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   triggered on. Explicit simplification, not an oversight: this is
   standard hindsight relabeling, and a stand-in for real position history
   until Phase 4 provides it. See `docs/label_spec.md`.
+- **Gold v1 implemented as a batch/backfill training-data job, not wired
+  into the recurring schedule.** `notebooks/02_gold_entry_candidates.py`
+  and `03_gold_exit_candidates.py` read all of `lawrence.silver.token_trades`,
+  sample assessment points T on a 15-min grid per token, and full-overwrite
+  `lawrence.gold.entry_candidates`/`exit_candidates` — unlike Bronze/Silver,
+  not added to `resources/lawrence_job.yml`'s schedule, since there's no
+  model yet to justify a production-serving (T="now") path. Shared feature
+  math lives in `src/features/gold_features.py` (no PySpark — unit-tested
+  in `tests/test_gold_features.py`, runs in CI).
+- **KNOWN GAP, shipped intentionally rather than hidden: no rug-clamping.**
+  `label_spec.md`'s rule (clamp the label at the realized loss when
+  liquidity is pulled before T+HOLD_MINUTES) isn't implemented — there's no
+  pool-liquidity-state data to detect a pull event. v1 instead drops a
+  (token, T) row when no trade exists near T+HOLD_MINUTES. This is a real
+  survivorship-bias risk (quietly excludes likely-rugged tokens rather than
+  labeling their real loss) — documented in `docs/gold_spec.md`, revisit
+  once Bronze ingests pool-liquidity state.
