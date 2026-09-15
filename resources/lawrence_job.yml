@@ -31,3 +31,22 @@ resources:
           # Runs right after Bronze each cycle; its own LOOKBACK_MINUTES
           # (see notebook 01) is what makes a 15-min cadence safe, not this
           # depends_on -- it only orders the two tasks within one run.
+
+    lawrence_dune_backfill:
+      name: lawrence_dune_backfill
+      # No schedule -- trigger manually (UI "Run now", or
+      # `databricks jobs run-now --job-name lawrence_dune_backfill`) once
+      # per resume, whenever the dune_api_key secret is swapped to a new
+      # account. Exists specifically so this runs on a job cluster instead
+      # of an attached interactive notebook: attached notebooks hit
+      # "session_id is no longer usable ... INACTIVITY_TIMEOUT" (2026-09-15)
+      # during long silent stretches (the backfill loop is almost pure
+      # Python/requests against Dune's API, so it can go minutes without
+      # touching Spark and gets treated as an idle session). Job runs
+      # aren't tied to notebook-session activity the same way.
+      tasks:
+        - task_key: dune_backfill
+          notebook_task:
+            notebook_path: ../notebooks/00c_bronze_backfill_dune.py
+          timeout_seconds: 21600 # 6h -- generous ceiling for a manual,
+                                  # resumable, credit-bounded backfill run
