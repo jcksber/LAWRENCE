@@ -280,3 +280,21 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   wrong literal type (quoted '4' against an integer column) -> Trino
   query failure, invisible detail until error.message was surfaced. All
   three fixed; both venues now writing correctly for the remaining backfill.
+- **Dune backfill complete (2026-09-15).** Full window
+  2026-08-14T00:00:00Z - 2026-09-13T00:00:00Z, both venues, 60/60 chunks,
+  no chunk left in `partial`/`failed` state. Took 5 separate Dune API keys
+  (Jack's own trial, a friend's, three more) across ~4 credit-exhaustion
+  cycles, all recovered cleanly via the partial-row-salvage + resumable
+  progress table. Known caveats carried into Bronze, unchanged from the
+  module docstring: `tx_fee_native`/`tx_fee_usd` always NULL for
+  `source='dune'` rows; `buy_amount_usd`/`sell_amount_usd` both copied from
+  Dune's single `amount_usd`. One outlier not yet explained:
+  raydium_v4 on 2026-09-01 wrote 1,508,642 rows vs. ~200-350k on every
+  other day -- worth a real look (token launch? one wallet spamming
+  trades? a query artifact?) before trusting that day's data downstream.
+
+  Next: Silver's `LOOKBACK_MINUTES` (01_silver_token_trades.py) only looks
+  back ~60 min by design for the live 15-min cadence, so it won't see any
+  of this on its own -- either widen it for one manual run over the
+  backfill window, or query Bronze directly for `source = 'dune'` and
+  feed Silver's transform that way. Not done yet.
