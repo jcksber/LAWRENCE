@@ -250,3 +250,23 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   volume likely migrated to newer Raydium program versions (CPMM/CLMM) by
   this point. The `success`-with-0-rows chunks in the progress table are
   correct and don't need clearing.
+- **Correction to the entry above: raydium_v4's 0-row days were a real bug,
+  not real zeros (2026-09-15).** The independent Dune SQL editor check only
+  confirmed one day (2026-08-15) against the *same broken filter* -- it
+  reproduced the bug, it didn't validate the venue. A broader check (`SELECT
+  version, COUNT(*), SUM(amount_usd) FROM dex_solana.trades WHERE
+  project='raydium' AND block_time in August 2026, GROUP BY version`) shows
+  `version=4` ("amm") with 6,064,410 real trades and $406M volume for the
+  month -- nowhere near zero. `where_sql` filtered on
+  `project_program_id = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8'`,
+  which is unreliable: likely many v4 swaps route through an aggregator, so
+  Dune's `project_program_id` records the outer router program instead of
+  Raydium's own address for a large share of trades -- the same class of
+  problem already known for uniswap_v3_base's per-pool addresses. Fixed by
+  matching `project = 'raydium' AND version = '4'` instead, mirroring
+  uniswap_v3_base's existing approach. Every `raydium_v4` chunk logged
+  `success` with 0 rows before this fix is now known wrong and needs
+  clearing from `_dune_backfill_progress` (safe -- Bronze never actually
+  got any raydium rows from those chunks, so there's nothing to
+  de-duplicate) before the next run, or the corrected query will be
+  silently skipped for every date already marked done.

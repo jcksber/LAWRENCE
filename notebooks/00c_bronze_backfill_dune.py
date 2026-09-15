@@ -101,7 +101,14 @@ VENUES: list[Venue] = [
 DUNE_VENUE_FILTERS: dict[str, DuneVenueFilter] = {
     "raydium_v4": DuneVenueFilter(
         table="dex_solana.trades",
-        where_sql="project_program_id = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8'",
+        # NOT an address match on project_program_id -- verified wrong live
+        # (2026-09-15): that column returns ~0 rows for version=4 even
+        # though Dune shows 6,064,410 real v4 trades / $406M volume for
+        # August 2026 (likely because many v4 swaps route through an
+        # aggregator, so Dune records the outer router program there
+        # instead of Raydium's own address). Matches uniswap_v3_base's
+        # existing project+version approach instead.
+        where_sql="project = 'raydium' AND version = '4'",
         columns=[
             "block_time", "tx_id", "project", "version", "version_name",
             "token_bought_symbol", "token_sold_symbol",
