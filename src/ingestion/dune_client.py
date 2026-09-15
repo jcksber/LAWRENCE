@@ -28,18 +28,27 @@ own token amount, so this doesn't distort the derived price.
 
 COST INCIDENT, 2026-09-15: a first real run selected all ~30 columns
 (`SELECT *`) chunked by day, and blew through a 2,500-credit free trial
-partway through a SINGLE day/venue chunk (paginated past row offset
-415,000 before hitting a 402). The earlier cost-test that suggested this
+partway through ONE day/venue chunk's pagination (past row offset
+415,000 before a 402) -- 7 full prior days had actually fetched fine.
+None of it reached Bronze: the notebook (then) wrote once at the end, and
+the 402 crashed it first. The earlier cost-test that suggested this
 would be cheap only measured tiny 1-hour-window aggregate queries
 (COUNT(*)/GROUP BY), not full-column trade-level SELECTs at real
-top-venue volume -- a materially different cost profile. Two changes as a
-result: `DuneVenueFilter` now carries an explicit `columns` list (only
-what `to_bronze_row` actually needs) instead of `SELECT *`, and
-`DuneCreditsExhausted` is raised immediately on a 402 rather than being
-retried or treated like any other failure, so a caller can abort the
-whole backfill loop instead of burning retry time on every remaining
-chunk. Re-measure real per-query cost at this narrower column set on a
-small window BEFORE sizing anything close to the original 30-day pull.
+top-venue volume -- a materially different cost profile.
+
+Changes as a result: `DuneVenueFilter` now carries an explicit `columns`
+list (only what `to_bronze_row` needs) instead of `SELECT *`;
+`DuneCreditsExhausted` is raised immediately on a 402 (never retried) so
+a caller can abort the whole run instead of burning retry time on every
+remaining chunk, AND carries whatever rows had already been fetched from
+earlier pages of the SAME query (`partial_rows`) so a 402 mid-pagination
+loses at most the one in-flight page, not the whole chunk. The backfill
+notebook writes to Bronze after every chunk (and after a partial
+failure) rather than once at the end, and tracks completed chunks in a
+small progress table so a re-run -- on the same API key or a different
+one -- skips whatever's already landed instead of re-paying for it.
+Re-measure real per-query cost at this narrower column set on a small
+window before sizing anything close to the original 30-day pull.
 
 This client is not used for live/production ingestion -- that stays on
 Bitquery's realtime tier. Run manually from
@@ -78,7 +87,18 @@ class DuneCreditsExhausted(RuntimeError):
     and every other in-flight/queued chunk will fail the same way until
     credits are topped up. Callers (the backfill notebook) should catch
     this SEPARATELY from RuntimeError and abort the whole run, not just
-    skip the one chunk -- see the module's COST INCIDENT note."""
+    skip the one chunk -- see the module's COST INCIDENT note.
+
+    `partial_rows` carries whatever rows `_fetch_all_rows` had already
+    fetched from earlier PAGES of the same query before a later page hit
+    402 -- e.g. pages 1-3 succeeded (15,000 rows) and page 4 failed: those
+    15,000 rows are real, paid-for data and shouldn't be discarded just
+    because the query didn't finish. Empty when nothing was fetched yet
+    (submission itself failed, or the very first page did)."""
+
+    def __init__(self, message: str, partial_rows: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.partial_rows: list[dict[str, Any]] = partial_rows or []
 
 
 @dataclass(frozen=True)
@@ -207,11 +227,20 @@ class DuneClient:
         rows: list[dict[str, Any]] = []
         offset = 0
         while True:
-            data = self._request(
-                "GET",
-                f"{DUNE_API_BASE}/execution/{execution_id}/results",
-                params={"limit": self.page_size, "offset": offset},
-            )
+            try:
+                data = self._request(
+                    "GET",
+                    f"{DUNE_API_BASE}/execution/{execution_id}/results",
+                    params={"limit": self.page_size, "offset": offset},
+                )
+            except DuneCreditsExhausted as exc:
+                # Attach whatever earlier pages already succeeded before
+                # re-raising -- see DuneCreditsExhausted's docstring. This
+                # is the actual fix for the 2026-09-15 incident: that
+                # failure happened mid-pagination (offset 415,000), and
+                # every page before it was silently discarded.
+                exc.partial_rows = rows
+                raise
             page_rows = data.get("result", {}).get("rows", [])
             rows.extend(page_rows)
             if len(page_rows) < self.page_size:

@@ -212,6 +212,36 @@ def test_402_raises_credits_exhausted_immediately_without_retrying():
     assert mock_req.call_count == 1  # no retry
 
 
+def test_402_mid_pagination_preserves_earlier_pages_as_partial_rows():
+    # The actual 2026-09-15 loss: pages 1-3 succeeded (real, paid-for
+    # data) and page 4 hit 402 -- the old code discarded pages 1-3
+    # entirely. Confirm they now survive on the exception.
+    client = DuneClient(api_key="fake", page_size=2)
+    page1 = _mock_response({"result": {"rows": [{"a": 1}, {"a": 2}]}})
+    page2 = _mock_response({"result": {"rows": [{"a": 3}, {"a": 4}]}})
+    page3_fails = _mock_response({}, status_code=402)
+    with patch(
+        "ingestion.dune_client.requests.request",
+        side_effect=[page1, page2, page3_fails],
+    ):
+        try:
+            client._fetch_all_rows("exec123")
+            assert False, "expected DuneCreditsExhausted"
+        except DuneCreditsExhausted as exc:
+            assert exc.partial_rows == [{"a": 1}, {"a": 2}, {"a": 3}, {"a": 4}]
+
+
+def test_402_on_first_page_has_empty_partial_rows():
+    client = DuneClient(api_key="fake", page_size=5000)
+    with patch("ingestion.dune_client.requests.request") as mock_req:
+        mock_req.return_value = _mock_response({}, status_code=402)
+        try:
+            client._fetch_all_rows("exec123")
+            assert False, "expected DuneCreditsExhausted"
+        except DuneCreditsExhausted as exc:
+            assert exc.partial_rows == []
+
+
 def test_credits_exhausted_is_not_swallowed_as_generic_runtime_error_by_type():
     # DuneCreditsExhausted IS a RuntimeError subclass (so old callers that
     # only catch RuntimeError still catch it) but callers that need to

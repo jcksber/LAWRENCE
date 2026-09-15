@@ -200,3 +200,22 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   `notebooks/00c_bronze_backfill_dune.py` reset to `BACKFILL_DAYS = 5`
   with daily chunks (not hourly) as the next real-cost test, at the new
   narrower column set, once credits are available again.
+- **Dune backfill: minimize loss on 402, make re-runs resumable
+  (2026-09-15).** Two remaining gaps from the cost incident fixed:
+  (1) `DuneCreditsExhausted` now carries `partial_rows` -- whatever pages
+  of the SAME query already succeeded before a later page hit 402 (the
+  actual 2026-09-15 loss was pages 1-3 of a paginated fetch being
+  discarded when page 4 failed, not just "the chunk"). The notebook
+  writes those salvaged rows to Bronze immediately, logged as `partial`.
+  (2) Added `lawrence.bronze._dune_backfill_progress`, an append-only log
+  of every chunk attempted; only a `success` row blocks re-fetching a
+  chunk on a future run (`partial`/`failed` are retried wholesale --
+  cheap, at most one page's re-fetch, and safer than risking permanent
+  data loss by marking an incomplete chunk done). This is why the
+  backfill window moved from "now minus N days" to fixed absolute dates
+  (`BACKFILL_WINDOW_START`/`END`) -- chunk boundaries must be identical
+  across separate runs for the skip-check to match anything.
+  Operational note: plan is to run this with a friend's Dune API key
+  (swapped into the `dune_api_key` secret) once the current account's
+  credits are available again -- the progress table is what makes that
+  handoff safe regardless of which key completes which chunk.

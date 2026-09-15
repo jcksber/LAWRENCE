@@ -8,25 +8,26 @@
 # MAGIC (EVM) / `dex_solana.trades` (Solana) tables cover the same historical
 # MAGIC range without that gate (see docs/decisions.md, 2026-09-15).
 # MAGIC
-# MAGIC **COST INCIDENT, 2026-09-15**: a first version of this notebook selected
-# MAGIC all ~30 columns (`SELECT *`) chunked by day, and burned through a
-# MAGIC 2,500-credit free trial partway through a SINGLE day/venue chunk
-# MAGIC (paginated past row offset 415,000 before a 402). Worse, the 402 was an
-# MAGIC unhandled `requests.HTTPError` that crashed the whole notebook before
-# MAGIC the (single, end-of-run) Bronze write ever executed -- every credit
-# MAGIC spent produced zero rows in Bronze. Fixed on both fronts:
-# MAGIC - `dune_client.py` now selects only the columns `to_bronze_row` actually
-# MAGIC   needs (not `SELECT *`), and raises `DuneCreditsExhausted` immediately
-# MAGIC   on a 402 instead of a raw, unhandled `HTTPError`.
-# MAGIC - This notebook now writes to Bronze after EVERY chunk, not once at the
-# MAGIC   end, so a future failure can never again erase already-fetched data
-# MAGIC   -- the failed run above actually fetched 7 good days before the 8th
-# MAGIC   day's chunk drained the rest, but none of it was ever written, and
-# MAGIC   it's confirmed gone.
-# MAGIC - `BACKFILL_DAYS` reset to a real test value below with DAILY chunks
-# MAGIC   (daily chunking itself was fine -- 7 of them succeeded; no need for
-# MAGIC   finer than that). Confirm real per-query cost at the new narrower
-# MAGIC   column set before raising it toward the original 30-day target.
+# MAGIC **COST INCIDENT, 2026-09-15, and the fixes below.** A first run
+# MAGIC (`SELECT *`, daily chunks) fetched 7 real days fine, then hit a 402
+# MAGIC mid-pagination on day 8 and crashed -- the whole 7 days was lost because
+# MAGIC the notebook (then) wrote to Bronze only once, at the very end. Fixed
+# MAGIC on every front that mattered:
+# MAGIC - **Column cost**: queries now select only what `to_bronze_row` needs
+# MAGIC   (`DuneVenueFilter.columns`), not `SELECT *`.
+# MAGIC - **Mid-pagination loss**: `DuneCreditsExhausted` now carries whatever
+# MAGIC   rows earlier pages of the SAME query already fetched
+# MAGIC   (`partial_rows`) -- a 402 on page 4 no longer discards pages 1-3.
+# MAGIC - **End-of-run loss**: Bronze is written after every chunk (and after
+# MAGIC   a partial failure), never batched to one write at the end.
+# MAGIC - **Re-run cost**: a small progress table
+# MAGIC   (`lawrence.bronze._dune_backfill_progress`) records every chunk that
+# MAGIC   fully succeeded. Re-running this notebook -- same API key, or a
+# MAGIC   DIFFERENT one (e.g. after swapping in a friend's key when yours runs
+# MAGIC   out) -- skips anything already done instead of re-paying for it.
+# MAGIC   This is why the backfill window below is a FIXED pair of dates, not
+# MAGIC   "now minus N days": chunk boundaries have to be identical across
+# MAGIC   runs/sessions/accounts for the skip-check to match anything.
 # MAGIC
 # MAGIC **KNOWN GAP, accepted deliberately**: rows written by this notebook have
 # MAGIC `tx_fee_native`/`tx_fee_usd` = NULL and `source = 'dune'` -- neither Dune
@@ -47,24 +48,28 @@ from ingestion.dune_client import (  # noqa: E402
     DuneVenueFilter,
     to_bronze_row,
 )
+from pyspark.sql import Row  # noqa: E402
 
 # COMMAND ----------
 
 DUNE_API_KEY = dbutils.secrets.get(scope="lawrence", key="dune_api_key")
+# ^ If you're swapping in a different Dune account's key partway through
+# (e.g. your own ran out, using a friend's now), update this secret value
+# and just re-run the whole notebook -- the progress table below makes
+# that safe; nothing already-completed gets re-fetched or re-paid-for.
 
-# START SMALL-ish. This is a re-run after a cost incident (see markdown
-# above). Correction: the failed run actually got 7 full days through
-# fine (daily chunking) before the 8th day's chunk spiked and drained the
-# rest -- so daily chunking itself is fine, hourly was an overcorrection.
-# That data never made it to Bronze though (crashed before the one-shot
-# write ran, and this was BEFORE the per-chunk-write fix below existed) --
-# confirmed gone, not recoverable. 5 days at the new narrower column set
-# is a real test of whether that set meaningfully lowers cost vs. the
-# SELECT * run, before raising this toward the 30-day target.
-BACKFILL_DAYS = 5
-CHUNK_HOURS = 24  # daily -- proven fine at real volume, no need for finer
+# FIXED window -- not "now minus N days". Chunk boundaries must be
+# byte-identical across separate runs (different sessions, different API
+# keys) for the progress-table skip-check to match anything. Dune's
+# curated tables lag real time by ~1 day (confirmed 2026-09-15), hence
+# ending a couple days back rather than at "now".
+BACKFILL_WINDOW_START = datetime(2026, 8, 14, tzinfo=timezone.utc)
+BACKFILL_WINDOW_END = datetime(2026, 9, 13, tzinfo=timezone.utc)
+CHUNK_HOURS = 24  # daily -- proven fine at real volume (7 days succeeded
+                  # before the incident); no need for anything finer.
 
 BRONZE_TABLE = "lawrence.bronze.dex_trades"
+PROGRESS_TABLE = "lawrence.bronze._dune_backfill_progress"
 
 # Same Venue identities as the live ingestion notebook (00_bronze_dex_ingestion.py)
 # -- kept in sync manually since Databricks notebooks aren't import-friendly
@@ -84,8 +89,8 @@ VENUES: list[Venue] = [
 ]
 
 # How to filter Dune's tables down to each Venue above, AND which columns
-# to pull -- explicit, not `SELECT *` (see COST INCIDENT note). Only what
-# dune_client.to_bronze_row actually reads for that chain family.
+# to pull -- explicit, not `SELECT *` (see COST INCIDENT note above). Only
+# what dune_client.to_bronze_row actually reads for that chain family.
 DUNE_VENUE_FILTERS: dict[str, DuneVenueFilter] = {
     "raydium_v4": DuneVenueFilter(
         table="dex_solana.trades",
@@ -111,80 +116,125 @@ DUNE_VENUE_FILTERS: dict[str, DuneVenueFilter] = {
 
 # COMMAND ----------
 
-client = DuneClient(api_key=DUNE_API_KEY)
-ingested_at = datetime.now(timezone.utc)
+def _log_progress(venue_name: str, chunk_start_str: str, chunk_end_str: str, status: str, rows_written: int) -> None:
+    """Appends one row to the progress table. Append-only, same as
+    Bronze itself -- multiple rows for the same chunk are harmless (the
+    skip-check below only cares whether ANY 'success' row exists for that
+    key), and this is far simpler than a Delta MERGE for what's just a
+    bookkeeping log."""
+    row = Row(
+        venue_name=venue_name,
+        chunk_start=chunk_start_str,
+        chunk_end=chunk_end_str,
+        status=status,  # "success" | "partial" | "failed"
+        rows_written=rows_written,
+        completed_at=datetime.now(timezone.utc),
+    )
+    (
+        spark.createDataFrame([row])
+        .write.format("delta")
+        .mode("append")
+        .option("mergeSchema", "true")
+        .saveAsTable(PROGRESS_TABLE)
+    )
 
-# Dune's curated tables lag real time by roughly a day (confirmed
-# 2026-09-15) -- anchor the window a bit further back so every chunk is
-# safely inside their actual coverage rather than racing the lag.
-window_end = datetime.now(timezone.utc) - timedelta(days=2)
-window_start = window_end - timedelta(days=BACKFILL_DAYS)
 
-print(f"Backfill window: [{window_start.isoformat()}, {window_end.isoformat()})")
-print(f"Venues: {[v.name for v in VENUES]}, chunk size: {CHUNK_HOURS}h")
+def _write_bronze(dune_rows: list[dict], venue: Venue, ingested_at: datetime) -> int:
+    if not dune_rows:
+        return 0
+    bronze_rows = [to_bronze_row(r, venue, ingested_at) for r in dune_rows]
+    df = spark.createDataFrame([Row(**r) for r in bronze_rows])
+    (
+        df.write.format("delta")
+        .mode("append")
+        .option("mergeSchema", "true")
+        .saveAsTable(BRONZE_TABLE)
+    )
+    return len(bronze_rows)
+
+
+# Only "success" blocks a re-fetch -- "partial"/"failed" chunks are
+# retried wholesale next run (cheap: at most one page's worth of
+# re-fetch for a partial chunk) rather than risk permanently losing the
+# unfetched remainder by marking them done.
+completed_success: set[tuple[str, str, str]] = set()
+if spark.catalog.tableExists(PROGRESS_TABLE):
+    for r in spark.table(PROGRESS_TABLE).filter("status = 'success'").select(
+        "venue_name", "chunk_start", "chunk_end"
+    ).collect():
+        completed_success.add((r.venue_name, r.chunk_start, r.chunk_end))
+print(f"{len(completed_success)} chunk(s) already completed in a previous run -- will be skipped.")
 
 # COMMAND ----------
 
-from pyspark.sql import Row  # noqa: E402
+client = DuneClient(api_key=DUNE_API_KEY)
+ingested_at = datetime.now(timezone.utc)
 
 total_rows_written = 0
-chunk_start = window_start
+chunk_start = BACKFILL_WINDOW_START
 chunk_n = 0
-total_chunks = int((window_end - window_start).total_seconds() // 3600 // CHUNK_HOURS) * len(VENUES)
+total_chunks = int(
+    (BACKFILL_WINDOW_END - BACKFILL_WINDOW_START).total_seconds() // 3600 // CHUNK_HOURS
+) * len(VENUES)
 aborted = False
 
-while chunk_start < window_end and not aborted:
-    chunk_end = min(chunk_start + timedelta(hours=CHUNK_HOURS), window_end)
+while chunk_start < BACKFILL_WINDOW_END and not aborted:
+    chunk_end = min(chunk_start + timedelta(hours=CHUNK_HOURS), BACKFILL_WINDOW_END)
+    chunk_start_str = chunk_start.strftime("%Y-%m-%d %H:%M:%S")
+    chunk_end_str = chunk_end.strftime("%Y-%m-%d %H:%M:%S")
+
     for venue in VENUES:
         chunk_n += 1
+        key = (venue.name, chunk_start_str, chunk_end_str)
+        if key in completed_success:
+            print(f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start_str}, {chunk_end_str}) already done -- skipping")
+            continue
+
         venue_filter = DUNE_VENUE_FILTERS[venue.name]
         try:
             dune_rows = client.fetch_historical_trades(
-                venue_filter=venue_filter,
-                since_iso=chunk_start.strftime("%Y-%m-%d %H:%M:%S"),
-                till_iso=chunk_end.strftime("%Y-%m-%d %H:%M:%S"),
+                venue_filter=venue_filter, since_iso=chunk_start_str, till_iso=chunk_end_str
             )
         except DuneCreditsExhausted as exc:
-            # Every remaining chunk will fail the same way -- stop the
-            # whole run now instead of burning retry time on each of
-            # them. Whatever already got written (see below, written
-            # per-chunk, not batched) is safe.
-            print(f"[{chunk_n}/{total_chunks}] {venue.name} ABORTING RUN: {exc}")
+            # Salvage whatever pages already succeeded before this one
+            # failed -- see DuneCreditsExhausted.partial_rows. Logged as
+            # "partial", NOT "success", so a future run retries the
+            # whole chunk rather than treating it as done.
+            rows_salvaged = _write_bronze(exc.partial_rows, venue, ingested_at)
+            total_rows_written += rows_salvaged
+            _log_progress(venue.name, chunk_start_str, chunk_end_str, "partial", rows_salvaged)
+            print(
+                f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start_str}, {chunk_end_str}) "
+                f"ABORTING RUN (salvaged {rows_salvaged} partial rows): {exc}"
+            )
             aborted = True
             break
         except (RuntimeError, TimeoutError) as exc:
             # One chunk failing for another reason shouldn't take down
-            # the rest -- log and move on.
-            print(f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start}, {chunk_end}) FAILED: {exc}")
+            # the rest -- log (as retryable, not done) and move on.
+            _log_progress(venue.name, chunk_start_str, chunk_end_str, "failed", 0)
+            print(f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start_str}, {chunk_end_str}) FAILED: {exc}")
             continue
 
-        print(
-            f"[{chunk_n}/{total_chunks}] {venue.name} "
-            f"[{chunk_start}, {chunk_end}): {len(dune_rows)} rows"
-        )
-        if dune_rows:
-            bronze_rows = [to_bronze_row(r, venue, ingested_at) for r in dune_rows]
-            df = spark.createDataFrame([Row(**r) for r in bronze_rows])
-            (
-                df.write.format("delta")
-                .mode("append")
-                .option("mergeSchema", "true")
-                .saveAsTable(BRONZE_TABLE)
-            )
-            total_rows_written += len(bronze_rows)
+        rows_written = _write_bronze(dune_rows, venue, ingested_at)
+        total_rows_written += rows_written
+        _log_progress(venue.name, chunk_start_str, chunk_end_str, "success", rows_written)
+        completed_success.add(key)
+        print(f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start_str}, {chunk_end_str}): {rows_written} rows written")
+
     chunk_start = chunk_end
 
 print(f"\nTotal rows written to {BRONZE_TABLE} (source=dune) this run: {total_rows_written}")
 if aborted:
-    print("Run stopped early on credit exhaustion -- see message above.")
+    print("Run stopped early on credit exhaustion -- re-run (same key once topped up, or a different key) to continue; already-completed chunks will be skipped.")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC **Next**: check your Dune credit balance and divide by the number of
-# MAGIC chunks that actually completed above -- that's the real per-query cost
-# MAGIC at this narrower column set. Report it back before raising
-# MAGIC `BACKFILL_DAYS`/`CHUNK_HOURS` any further.
+# MAGIC chunks that *fully succeeded* above (see the progress table:
+# MAGIC `SELECT * FROM lawrence.bronze._dune_backfill_progress WHERE status = 'success'`)
+# MAGIC -- that's the real per-query cost at this narrower column set.
 # MAGIC
 # MAGIC Once you have real backfilled data, Silver's usual 60-minute lookback
 # MAGIC won't see it -- widen `LOOKBACK_MINUTES` in `01_silver_token_trades.py`
