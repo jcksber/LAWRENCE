@@ -200,6 +200,26 @@ def test_wait_until_done_raises_on_failed_state():
             pass
 
 
+def test_wait_until_done_surfaces_dune_error_detail_not_just_state():
+    # Regression test for the 2026-09-15 incident: a bare "state=FAILED"
+    # with no error detail made a real SQL type-mismatch bug
+    # indistinguishable from a transient engine failure.
+    client = DuneClient(api_key="fake", poll_interval_s=0, poll_timeout_s=5)
+    with patch("ingestion.dune_client.requests.request") as mock_req:
+        mock_req.return_value = _mock_response({
+            "state": "QUERY_STATE_FAILED",
+            "error": {
+                "type": "FAILED_TYPE_EXECUTION_FAILED",
+                "message": "'=' cannot be applied to integer, varchar(1)",
+            },
+        })
+        try:
+            client._wait_until_done("exec123")
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "cannot be applied to integer" in str(exc), str(exc)
+
+
 def test_wait_until_done_times_out_on_stuck_pending():
     client = DuneClient(api_key="fake", poll_interval_s=0, poll_timeout_s=0.05)
     with patch("ingestion.dune_client.requests.request") as mock_req:

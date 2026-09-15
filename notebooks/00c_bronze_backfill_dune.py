@@ -108,7 +108,11 @@ DUNE_VENUE_FILTERS: dict[str, DuneVenueFilter] = {
         # aggregator, so Dune records the outer router program there
         # instead of Raydium's own address). Matches uniswap_v3_base's
         # existing project+version approach instead.
-        where_sql="project = 'raydium' AND version = '4'",
+        # version is an integer column in dex_solana.trades (Trino/
+        # DuneSQL doesn't implicitly coerce varchar '4' -> integer for
+        # equality -- this is the likely cause of the 2026-09-15
+        # QUERY_STATE_FAILED errors seen once this filter was deployed).
+        where_sql="project = 'raydium' AND version = 4",
         columns=[
             "block_time", "tx_id", "project", "version", "version_name",
             "token_bought_symbol", "token_sold_symbol",

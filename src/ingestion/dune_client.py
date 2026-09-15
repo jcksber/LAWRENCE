@@ -217,7 +217,17 @@ class DuneClient:
             if "COMPLET" in state or "SUCCESS" in state:
                 return
             if "FAIL" in state or "CANCEL" in state:
-                raise RuntimeError(f"Dune execution {execution_id} failed: state={state}")
+                # Surface Dune's actual error detail instead of discarding
+                # it -- the status response carries an `error` object
+                # (type/message/metadata.line/column) on failure, and
+                # without it every failure looks identical ("state=FAILED")
+                # with no way to tell a real SQL bug from a transient
+                # engine issue. Confirmed via Dune's API docs (2026-09-15).
+                error = data.get("error") or {}
+                detail = error.get("message") or error.get("type") or "no error detail returned"
+                raise RuntimeError(
+                    f"Dune execution {execution_id} failed: state={state}: {detail}"
+                )
             time.sleep(self.poll_interval_s)
         raise TimeoutError(
             f"Dune execution {execution_id} did not finish within {self.poll_timeout_s}s"
