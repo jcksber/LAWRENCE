@@ -33,46 +33,85 @@ SILVER_TABLE = "lawrence.silver.token_trades"
 # 60-min scan expensive.
 LOOKBACK_MINUTES = 60
 
+# Optional manual catch-up overrides -- leave both None for normal live
+# cadence (a single [now - LOOKBACK_MINUTES, now) pass, unchanged from
+# before). Set both to process a bounded historical window in day-sized
+# pieces instead of one shot.
+#
+# 2026-09-15 incident: widening LOOKBACK_MINUTES to 40 days to catch up
+# the Dune backfill collected the whole ~9M+ row span into a single Python
+# list on the driver in one go (see the loop below -- the old version had
+# no chunking at all) and hung the kernel ("Python kernel is
+# unresponsive"). Chunking bounds driver memory the same way the Dune
+# backfill notebook itself already does successfully.
+#
+# Example -- catch up the Dune backfill window (Aug 14 - Sep 13):
+#   CATCHUP_SINCE = datetime(2026, 8, 14, tzinfo=timezone.utc)
+#   CATCHUP_UNTIL = datetime(2026, 9, 13, tzinfo=timezone.utc)
+CATCHUP_SINCE: datetime | None = None
+CATCHUP_UNTIL: datetime | None = None
+CATCHUP_CHUNK_HOURS = 24
+
 # COMMAND ----------
 
-since = datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)
-
-bronze_df = spark.table(BRONZE_TABLE).filter(f"block_time >= '{since.isoformat()}'")
-bronze_rows = [row.asDict() for row in bronze_df.collect()]
-
-silver_rows = [
-    silver_row
-    for bronze_row in bronze_rows
-    for silver_row in to_silver_rows(bronze_row)
-]
-print(f"Bronze rows scanned: {len(bronze_rows)} -> Silver candidate rows: {len(silver_rows)}")
-
-# COMMAND ----------
+if CATCHUP_SINCE is not None and CATCHUP_UNTIL is not None:
+    windows = []
+    chunk_start = CATCHUP_SINCE
+    while chunk_start < CATCHUP_UNTIL:
+        chunk_end = min(chunk_start + timedelta(hours=CATCHUP_CHUNK_HOURS), CATCHUP_UNTIL)
+        windows.append((chunk_start, chunk_end))
+        chunk_start = chunk_end
+else:
+    # Live cadence: single unbounded-above window, exactly as before.
+    windows = [(datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES), None)]
 
 from delta.tables import DeltaTable
 from pyspark.sql import Row
 
-if silver_rows:
-    new_df = spark.createDataFrame([Row(**r) for r in silver_rows])
+total_bronze = 0
+total_silver = 0
 
-    if spark.catalog.tableExists(SILVER_TABLE):
-        target = DeltaTable.forName(spark, SILVER_TABLE)
-        (
-            target.alias("t")
-            .merge(
-                new_df.alias("s"),
-                "t.dex_venue = s.dex_venue AND t.tx_hash = s.tx_hash"
-                " AND t.token_id = s.token_id",
+for i, (win_since, win_until) in enumerate(windows, start=1):
+    filter_sql = f"block_time >= '{win_since.isoformat()}'"
+    if win_until is not None:
+        filter_sql += f" AND block_time < '{win_until.isoformat()}'"
+
+    bronze_df = spark.table(BRONZE_TABLE).filter(filter_sql)
+    bronze_rows = [row.asDict() for row in bronze_df.collect()]
+
+    silver_rows = [
+        silver_row
+        for bronze_row in bronze_rows
+        for silver_row in to_silver_rows(bronze_row)
+    ]
+
+    total_bronze += len(bronze_rows)
+    total_silver += len(silver_rows)
+
+    if silver_rows:
+        new_df = spark.createDataFrame([Row(**r) for r in silver_rows])
+
+        if spark.catalog.tableExists(SILVER_TABLE):
+            target = DeltaTable.forName(spark, SILVER_TABLE)
+            (
+                target.alias("t")
+                .merge(
+                    new_df.alias("s"),
+                    "t.dex_venue = s.dex_venue AND t.tx_hash = s.tx_hash"
+                    " AND t.token_id = s.token_id",
+                )
+                .whenNotMatchedInsertAll()
+                .execute()
             )
-            .whenNotMatchedInsertAll()
-            .execute()
-        )
-        print(
-            f"Merged {len(silver_rows)} candidate rows into {SILVER_TABLE} "
-            "(deduped on dex_venue+tx_hash+token_id; matches were skipped)"
-        )
-    else:
-        new_df.write.format("delta").saveAsTable(SILVER_TABLE)
-        print(f"Created {SILVER_TABLE} with {len(silver_rows)} rows")
-else:
-    print("No Silver rows produced this run.")
+        else:
+            new_df.write.format("delta").saveAsTable(SILVER_TABLE)
+
+    print(
+        f"[{i}/{len(windows)}] [{win_since}, {win_until}): "
+        f"{len(bronze_rows)} Bronze rows -> {len(silver_rows)} Silver rows"
+    )
+
+print(
+    f"Done. Bronze rows scanned: {total_bronze} -> "
+    f"Silver candidate rows: {total_silver}"
+)
