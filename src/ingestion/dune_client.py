@@ -253,6 +253,18 @@ class DuneClient:
                 raise
             page_rows = data.get("result", {}).get("rows", [])
             rows.extend(page_rows)
+            # Pagination has no overall time cap (only each page's request
+            # has one) -- a high-volume chunk can silently page for
+            # minutes with nothing printed, indistinguishable from a hang
+            # (2026-09-15: 10+ min of silence on a Sep-1 chunk during a
+            # period of rising daily volume, never actually confirmed
+            # either way). Print progress every few pages so this is never
+            # ambiguous again.
+            if offset % (self.page_size * 5) == 0:
+                print(
+                    f"    ...fetched {len(rows)} rows so far "
+                    f"(execution {execution_id}, offset {offset})"
+                )
             if len(page_rows) < self.page_size:
                 break
             offset += self.page_size
