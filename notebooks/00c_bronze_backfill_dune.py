@@ -49,6 +49,13 @@ from ingestion.dune_client import (  # noqa: E402
     to_bronze_row,
 )
 from pyspark.sql import Row  # noqa: E402
+from pyspark.sql.types import (  # noqa: E402
+    DoubleType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
 
 # COMMAND ----------
 
@@ -139,11 +146,41 @@ def _log_progress(venue_name: str, chunk_start_str: str, chunk_end_str: str, sta
     )
 
 
+# Explicit schema, not inferred from the Row objects. Dune-sourced rows
+# always have tx_fee_native/tx_fee_usd = None (the documented fee gap) --
+# across a whole batch that's an all-null column, which Spark's type
+# inference cannot assign a type to at all (CANNOT_DETERMINE_TYPE,
+# confirmed live 2026-09-15). An explicit schema sidesteps inference
+# entirely, which also makes the earlier CANNOT_MERGE_TYPE class of bug
+# structurally impossible here going forward.
+_BRONZE_SCHEMA = StructType([
+    StructField("chain_family", StringType()),
+    StructField("network", StringType()),
+    StructField("dex_venue", StringType()),
+    StructField("block_time", StringType()),
+    StructField("tx_hash", StringType()),
+    StructField("dex_protocol", StringType()),
+    StructField("buy_token_id", StringType()),
+    StructField("buy_symbol", StringType()),
+    StructField("buy_amount", DoubleType()),
+    StructField("buy_amount_usd", DoubleType()),
+    StructField("sell_token_id", StringType()),
+    StructField("sell_symbol", StringType()),
+    StructField("sell_amount", DoubleType()),
+    StructField("sell_amount_usd", DoubleType()),
+    StructField("tx_fee_native", DoubleType()),
+    StructField("tx_fee_usd", DoubleType()),
+    StructField("raw_json", StringType()),
+    StructField("source", StringType()),
+    StructField("ingested_at", TimestampType()),
+])
+
+
 def _write_bronze(dune_rows: list[dict], venue: Venue, ingested_at: datetime) -> int:
     if not dune_rows:
         return 0
     bronze_rows = [to_bronze_row(r, venue, ingested_at) for r in dune_rows]
-    df = spark.createDataFrame([Row(**r) for r in bronze_rows])
+    df = spark.createDataFrame([Row(**r) for r in bronze_rows], schema=_BRONZE_SCHEMA)
     (
         df.write.format("delta")
         .mode("append")

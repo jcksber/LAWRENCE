@@ -81,6 +81,15 @@ def _evm_row(**overrides):
     return row
 
 
+def test_block_time_normalized_to_iso_z_format():
+    # Dune's raw format ("2026-09-13 00:31:16.000 UTC") is a different
+    # string shape than Bitquery's ISO-8601 Z-suffixed format Bronze
+    # already stores -- rows from both sources need to sort/compare the
+    # same way as strings.
+    bronze = to_bronze_row(_solana_row(block_time="2026-09-13 00:31:16.123 UTC"), RAYDIUM_V4, INGESTED_AT)
+    assert bronze["block_time"] == "2026-09-13T00:31:16.123000Z"
+
+
 def test_solana_row_maps_program_id_venue_correctly():
     bronze = to_bronze_row(_solana_row(), RAYDIUM_V4, INGESTED_AT)
     assert bronze["chain_family"] == "solana"

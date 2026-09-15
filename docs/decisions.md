@@ -219,3 +219,27 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   (swapped into the `dune_api_key` secret) once the current account's
   credits are available again -- the progress table is what makes that
   handoff safe regardless of which key completes which chunk.
+- **Dune backfill: CANNOT_DETERMINE_TYPE and block_time format
+  (2026-09-15).** After the CANNOT_MERGE_TYPE fix, a real run hit
+  `CANNOT_DETERMINE_TYPE` on every `uniswap_v3_base` chunk (200k-380k
+  real rows each, fetched and paid for, not written). Root cause:
+  `tx_fee_native`/`tx_fee_usd` are always `None` for every Dune-sourced
+  row (the documented fee gap) -- across a whole batch that's an
+  all-null column, which Spark's schema inference cannot assign any type
+  to at all, unlike a type conflict (CANNOT_MERGE_TYPE) which at least
+  has two real types to fail on. Fixed by giving `_write_bronze` an
+  explicit schema (`_BRONZE_SCHEMA` in the notebook) instead of relying
+  on inference from Row objects -- this also makes the earlier
+  CANNOT_MERGE_TYPE class of bug structurally impossible here going
+  forward. Separately normalized `block_time`: Dune returns
+  `"YYYY-MM-DD HH:MM:SS.mmm UTC"`, a different string shape than
+  Bitquery's ISO-8601 `Z`-suffixed format Bronze already stores --
+  `_normalize_block_time()` converts so both sources' rows sort/compare
+  identically as strings.
+  OPEN QUESTION, not yet resolved: the same run's `raydium_v4` chunks for
+  Aug 15-20 all reported 0 rows written. Unverified whether this is real
+  (volume genuinely absent/shifted to other Raydium program versions by
+  then) or a query bug -- asked to check directly against Dune's SQL
+  editor before trusting it, since those chunks are already logged
+  `success` in the progress table and would be silently skipped forever
+  on a re-run if it turns out to be a bug.

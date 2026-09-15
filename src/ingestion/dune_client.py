@@ -71,7 +71,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
@@ -249,6 +249,17 @@ class DuneClient:
         return rows
 
 
+def _normalize_block_time(dune_block_time: str) -> str:
+    """Dune's block_time comes back as `"YYYY-MM-DD HH:MM:SS.mmm UTC"`
+    (confirmed on real rows, both chains) -- a different string shape
+    than Bitquery's ISO-8601 `Z`-suffixed format Bronze already uses.
+    Normalizing to match keeps `source='bitquery'` and `source='dune'`
+    rows string-sortable/comparable the same way for any code doing
+    range filtering on this column (e.g. Silver's lookback query)."""
+    dt = datetime.strptime(dune_block_time.replace(" UTC", ""), "%Y-%m-%d %H:%M:%S.%f")
+    return dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _to_float(x: Any) -> float | None:
     """Dune's JSON responses mix Python int and float for the same
     numeric column depending on whether a given value happens to be a
@@ -290,7 +301,7 @@ def to_bronze_row(
         "chain_family": venue.chain_family.value,
         "network": venue.network,
         "dex_venue": venue.name,
-        "block_time": dune_row["block_time"],
+        "block_time": _normalize_block_time(dune_row["block_time"]),
         "tx_hash": tx_hash,
         "dex_protocol": dex_protocol,
         "buy_token_id": buy_token_id,
