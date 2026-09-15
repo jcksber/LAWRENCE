@@ -249,6 +249,19 @@ class DuneClient:
         return rows
 
 
+def _to_float(x: Any) -> float | None:
+    """Dune's JSON responses mix Python int and float for the same
+    numeric column depending on whether a given value happens to be a
+    whole number (e.g. `50` vs `49.75`) -- a batch of rows with
+    inconsistent int/float types for one column breaks Spark's schema
+    inference (`CANNOT_MERGE_TYPE: DoubleType`/`LongType`, confirmed live
+    2026-09-15). Cast every numeric field through this so the type is
+    always float (or None), never left to whatever JSON happened to
+    produce. Bitquery rows don't have this problem -- it serializes
+    decimals as strings -- so this is Dune-specific."""
+    return None if x is None else float(x)
+
+
 def to_bronze_row(
     dune_row: dict[str, Any], venue: Venue, ingested_at: datetime
 ) -> dict[str, Any]:
@@ -271,7 +284,7 @@ def to_bronze_row(
 
     # One `amount_usd` per trade on Dune, not a separate value per side --
     # see module docstring's KNOWN APPROXIMATION.
-    amount_usd = dune_row.get("amount_usd")
+    amount_usd = _to_float(dune_row.get("amount_usd"))
 
     return {
         "chain_family": venue.chain_family.value,
@@ -282,11 +295,11 @@ def to_bronze_row(
         "dex_protocol": dex_protocol,
         "buy_token_id": buy_token_id,
         "buy_symbol": dune_row["token_bought_symbol"],
-        "buy_amount": dune_row["token_bought_amount"],
+        "buy_amount": _to_float(dune_row["token_bought_amount"]),
         "buy_amount_usd": amount_usd,
         "sell_token_id": sell_token_id,
         "sell_symbol": dune_row["token_sold_symbol"],
-        "sell_amount": dune_row["token_sold_amount"],
+        "sell_amount": _to_float(dune_row["token_sold_amount"]),
         "sell_amount_usd": amount_usd,
         # KNOWN GAP -- see module docstring. Always None for Dune-sourced
         # rows; live Bitquery rows still carry real fees.

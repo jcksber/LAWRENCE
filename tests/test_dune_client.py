@@ -120,6 +120,30 @@ def test_fee_fields_are_always_none():
     assert evm_bronze["tx_fee_usd"] is None
 
 
+def test_mixed_int_and_float_amounts_both_come_out_as_float():
+    # The 2026-09-15 CANNOT_MERGE_TYPE incident: Dune's JSON gives ints
+    # for whole-number values (e.g. 50) and floats otherwise (e.g.
+    # 49.75) for the same column across different rows -- Spark's schema
+    # inference breaks on that mix. Confirm both normalize to float.
+    int_row = to_bronze_row(
+        _evm_row(token_bought_amount=50, token_sold_amount=25, amount_usd=100),
+        UNISWAP_V3_BASE,
+        INGESTED_AT,
+    )
+    float_row = to_bronze_row(
+        _evm_row(token_bought_amount=50.5, token_sold_amount=25.1, amount_usd=100.25),
+        UNISWAP_V3_BASE,
+        INGESTED_AT,
+    )
+    for row in (int_row, float_row):
+        assert isinstance(row["buy_amount"], float)
+        assert isinstance(row["sell_amount"], float)
+        assert isinstance(row["buy_amount_usd"], float)
+        assert isinstance(row["sell_amount_usd"], float)
+    assert int_row["buy_amount"] == 50.0
+    assert int_row["buy_amount_usd"] == 100.0
+
+
 def test_null_amount_usd_row_passes_through_as_none():
     # Confirmed on real sampled Base/Uniswap rows: illiquid/exotic tokens
     # can have no USD price at all. to_bronze_row shouldn't crash on it --
