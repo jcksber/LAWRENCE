@@ -216,7 +216,21 @@ while chunk_start < BACKFILL_WINDOW_END and not aborted:
             print(f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start_str}, {chunk_end_str}) FAILED: {exc}")
             continue
 
-        rows_written = _write_bronze(dune_rows, venue, ingested_at)
+        try:
+            rows_written = _write_bronze(dune_rows, venue, ingested_at)
+        except Exception as exc:
+            # Anything at the write layer (a Spark type-inference error,
+            # e.g. the 2026-09-15 CANNOT_MERGE_TYPE incident, or any
+            # other surprise) shouldn't kill the whole run either --
+            # this fetch is already paid for, so log it retryable and
+            # move on rather than losing everything after this point.
+            _log_progress(venue.name, chunk_start_str, chunk_end_str, "failed", 0)
+            print(
+                f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start_str}, {chunk_end_str}) "
+                f"WRITE FAILED (fetched {len(dune_rows)} rows, not written): {exc}"
+            )
+            continue
+
         total_rows_written += rows_written
         _log_progress(venue.name, chunk_start_str, chunk_end_str, "success", rows_written)
         completed_success.add(key)
