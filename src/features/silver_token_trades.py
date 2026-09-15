@@ -81,7 +81,12 @@ def to_silver_rows(bronze_row: dict[str, Any]) -> list[dict[str, Any]]:
     for side, quote_side in sides:
         amount = _to_float(bronze_row[f"{side}_amount"])
         amount_usd = _to_float(bronze_row[f"{side}_amount_usd"])
-        if not amount:  # None or 0.0 -- can't compute a price from it
+        # None or 0.0 amount -- can't compute a price. None amount_usd --
+        # no USD price for this token at all (Dune-backfilled rows can
+        # have this for illiquid/exotic tokens their price oracle misses;
+        # live Bitquery rows haven't shown it, but don't assume forever).
+        # Either way, skip rather than crash on `amount_usd / amount`.
+        if not amount or amount_usd is None:
             continue
         rows.append(
             {

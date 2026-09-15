@@ -130,3 +130,41 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   dashboard doesn't expose a per-query credit breakdown, so real cost is
   being measured empirically via a small bounded test query before
   committing to a full backfill.
+- **Historical backfill via Bitquery abandoned (2026-09-15).** Cost-test
+  notebook (`00b_bronze_backfill_test.py`) failed with `403: access
+  restricted: your plan only allows "realtime", but the request uses
+  "archive:solana:DEXTrades"`. Confirmed with Bitquery: historical/archive
+  data requires an Enterprise account, not available on the current plan
+  at any price point below that. This isn't a query-syntax bug (the
+  `dataset: archive` + `till` shape was correct) -- it's a hard plan gate.
+  `fetch_historical_trades()` and the `_EVM_BACKFILL_QUERY`/
+  `_SOLANA_BACKFILL_QUERY` templates in `bitquery_client.py` are unusable
+  on this plan and staying in the codebase unused for now, pending a
+  decision on next steps (see game_plan.md / next conversation).
+- **Historical backfill pivoted to Dune (2026-09-15).** Verified live
+  against real bounded queries (not guessed): Dune's curated `dex.trades`
+  (EVM) and `dex_solana.trades` (Solana) tables cover both venues --
+  `raydium_v4` filters by an exact `project_program_id` match (identical
+  to our Bitquery program address), `uniswap_v3_base` filters by
+  `project = 'uniswap' AND version = '3'` (Dune's EVM rows carry per-pool
+  addresses, not the shared factory address our Venue stores). Cost is
+  negligible: 1.029 credits for 13 test queries against a 2,500-credit
+  free trial -- not a real constraint at any scope we'd plausibly need.
+  Both tables lag real time by ~1 day (irrelevant for a backfill).
+  Three decisions made before writing any code: (1) accept
+  `tx_fee_native`/`tx_fee_usd` = NULL on Dune-backfilled rows rather than
+  chase an unverified fee join -- neither Dune table has a usable
+  on-chain tx fee (EVM: no fee column at all; Solana: `fee_tier`/`fee_usd`
+  exist but were blank on every sampled row, and even populated would be
+  the DEX's own swap fee, not the wallet's tx fee anyway); (2) map Dune
+  rows into Bronze's existing schema (`source = 'dune'`) so the
+  already-tested Silver transform runs unchanged, rather than a second
+  Silver path; (3) start with a 30-day window. Implemented in
+  `src/ingestion/dune_client.py` (`DuneClient`, `DuneVenueFilter`,
+  `to_bronze_row`, unit-tested in `tests/test_dune_client.py`) and
+  `notebooks/00c_bronze_backfill_dune.py`.
+  Found and fixed a real bug while wiring this up: Dune's `amount_usd` is
+  null for some illiquid/exotic tokens (confirmed on real sampled Base
+  rows) -- `to_silver_rows` would have thrown `TypeError` on
+  `amount_usd / amount` when `amount_usd` is `None`. Fixed to skip those
+  rows instead of crashing; new test case added.

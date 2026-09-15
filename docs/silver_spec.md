@@ -82,5 +82,16 @@ named `chain_native_fee`, not `chain_native_fee_raw`.
 Implemented in `src/ingestion/bitquery_client.py` (query changes) and
 `notebooks/00_bronze_dex_ingestion.py` (`tx_fee_native`/`tx_fee_usd` in
 `_normalize`). Silver's job is still just to carry these two columns
-through unchanged (per the schema above) -- the Silver notebook itself is
-not written yet.
+through unchanged (per the schema above).
+
+## `source` column: `bitquery` vs `dune`
+
+Bronze rows carry a `source` column. Live rows (`00_bronze_dex_ingestion.py`)
+are `source = 'bitquery'` and have real fee data. Historical backfill rows
+(`00c_bronze_backfill_dune.py`) are `source = 'dune'` and always have
+`tx_fee_native`/`tx_fee_usd` = NULL -- neither Dune table Bronze reads from
+has a usable on-chain transaction fee (confirmed 2026-09-15, see
+`docs/decisions.md` and `src/ingestion/dune_client.py`'s module docstring).
+Anything downstream computing on these two Silver columns should expect
+nulls for `dune`-sourced rows and handle them accordingly, not assume every
+row has real fee data.

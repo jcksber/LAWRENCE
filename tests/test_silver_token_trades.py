@@ -95,6 +95,19 @@ def test_zero_amount_side_is_skipped_not_a_zero_division_error():
     assert to_silver_rows(row) == []
 
 
+def test_null_amount_usd_is_skipped_not_a_type_error():
+    # Dune-backfilled rows can have a null amount_usd for illiquid/exotic
+    # tokens their price oracle didn't cover (confirmed on real sampled
+    # Base/Uniswap rows, 2026-09-15) -- amount is real but amount_usd is
+    # None, so price_usd = amount_usd / amount would raise TypeError if
+    # not guarded.
+    row = _bronze_row(
+        sell_token_id="SomeMintAddressForARealToken111111111111111",
+        sell_amount_usd=None,
+    )
+    assert to_silver_rows(row) == []
+
+
 def test_missing_fee_columns_pass_through_as_none():
     # Pre-fee-field Bronze rows (written before the fee columns existed)
     # have tx_fee_native/tx_fee_usd = NULL, not a KeyError.
