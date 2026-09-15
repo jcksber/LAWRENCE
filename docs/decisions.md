@@ -270,3 +270,13 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   got any raydium rows from those chunks, so there's nothing to
   de-duplicate) before the next run, or the corrected query will be
   silently skipped for every date already marked done.
+- **raydium_v4 backfill confirmed fixed (2026-09-15).** After the
+  project+version filter (365cb65) and the integer-literal fix (14a4c7d,
+  `version = 4` not `'4'`) both deployed, raydium_v4 is writing real rows:
+  105223 / 113365 / 162384 for Aug 16-18, consistent with the ~195k/day
+  implied by the monthly aggregate. Chain of bugs, in order: wrong filter
+  column (address instead of project+version) -> silently returned 0,
+  misread as a real zero -> corrected filter had the right columns but
+  wrong literal type (quoted '4' against an integer column) -> Trino
+  query failure, invisible detail until error.message was surfaced. All
+  three fixed; both venues now writing correctly for the remaining backfill.
