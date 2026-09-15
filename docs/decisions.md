@@ -298,3 +298,29 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   of this on its own -- either widen it for one manual run over the
   backfill window, or query Bronze directly for `source = 'dune'` and
   feed Silver's transform that way. Not done yet.
+- **CANNOT_DETERMINE_TYPE recurred in Silver + a correctness concern in
+  Bronze's existing fix (2026-09-15).** Silver's catch-up run hit the same
+  all-null-column type-inference failure Bronze already hit
+  (tx_fee_usd/chain_native_fee always None for a 100%-Dune-sourced chunk).
+  Fixed with an explicit _SILVER_SCHEMA, same idea as Bronze's
+  _BRONZE_SCHEMA. While adding it, realized Bronze's existing fix
+  (`spark.createDataFrame([Row(**r) for r in bronze_rows], schema=...)`)
+  had an unverified assumption baked in: `Row(**kwargs)` is documented to
+  sort its fields alphabetically by name internally, and it was never
+  confirmed whether createDataFrame resolves that correctly against a
+  separately-authored explicit schema (name-matched) or naively
+  positionally (which would silently write values into the wrong
+  columns -- not a crash, wrong data). Couldn't install pyspark in this
+  environment to test empirically, so rather than trust memory on an
+  internal Spark resolution order, switched both Bronze and Silver to
+  pass plain dicts directly to `createDataFrame(data, schema=...)`,
+  which is unambiguous, documented, name-matched behavior. `_log_progress`
+  in the Bronze notebook is unaffected (no separate explicit schema is
+  given there, so there's no cross-schema ambiguity to worry about).
+  Have not gone back to re-verify the already-written ~9M Bronze rows
+  column-by-column; row *counts* have been spot-checked repeatedly and
+  matched Dune's own aggregates, which any full column-scramble likely
+  wouldn't survive undetected (e.g. text landing in numeric columns would
+  break every downstream Silver read), but this hasn't been explicitly
+  proven the way row counts were. Worth a real spot-check of raw Bronze
+  values (not just counts) before trusting this fully.

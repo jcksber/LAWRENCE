@@ -66,7 +66,33 @@ else:
     windows = [(datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES), None)]
 
 from delta.tables import DeltaTable
-from pyspark.sql import Row
+from pyspark.sql.types import DoubleType, StringType, StructField, StructType
+
+# Explicit schema, not inference -- same fix as Bronze's _BRONZE_SCHEMA
+# (2026-09-15). tx_fee_usd/chain_native_fee are always None for a
+# catch-up chunk that's 100% Dune-sourced rows (Dune has no usable
+# transaction fee -- see silver_spec.md), which gives Spark's
+# createDataFrame zero non-null samples to infer those columns' types
+# from -- CANNOT_DETERMINE_TYPE. Live-cadence chunks (real Bitquery fees)
+# never hit this, which is why it was invisible until the first
+# all-Dune catch-up chunk actually ran.
+_SILVER_SCHEMA = StructType(
+    [
+        StructField("token_id", StringType(), True),
+        StructField("chain_family", StringType(), True),
+        StructField("network", StringType(), True),
+        StructField("dex_venue", StringType(), True),
+        StructField("dex_protocol", StringType(), True),
+        StructField("trade_time", StringType(), True),
+        StructField("side", StringType(), True),
+        StructField("price_usd", DoubleType(), True),
+        StructField("amount_usd", DoubleType(), True),
+        StructField("tx_fee_usd", DoubleType(), True),
+        StructField("chain_native_fee", DoubleType(), True),
+        StructField("tx_hash", StringType(), True),
+        StructField("quote_token_id", StringType(), True),
+    ]
+)
 
 total_bronze = 0
 total_silver = 0
@@ -89,7 +115,13 @@ for i, (win_since, win_until) in enumerate(windows, start=1):
     total_silver += len(silver_rows)
 
     if silver_rows:
-        new_df = spark.createDataFrame([Row(**r) for r in silver_rows])
+        # Plain dicts, not Row(**r) -- see 00c_bronze_backfill_dune.py's
+        # matching comment (2026-09-15): dicts-with-schema is the
+        # unambiguous, name-matched form; Row(**kwargs) sorts fields
+        # alphabetically internally and this call's target schema field
+        # order doesn't match that, so it isn't worth trusting to resolve
+        # correctly by luck.
+        new_df = spark.createDataFrame(silver_rows, schema=_SILVER_SCHEMA)
 
         if spark.catalog.tableExists(SILVER_TABLE):
             target = DeltaTable.forName(spark, SILVER_TABLE)

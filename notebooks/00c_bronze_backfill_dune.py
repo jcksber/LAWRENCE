@@ -191,7 +191,14 @@ def _write_bronze(dune_rows: list[dict], venue: Venue, ingested_at: datetime) ->
     if not dune_rows:
         return 0
     bronze_rows = [to_bronze_row(r, venue, ingested_at) for r in dune_rows]
-    df = spark.createDataFrame([Row(**r) for r in bronze_rows], schema=_BRONZE_SCHEMA)
+    # Plain dicts, not Row(**r) -- Row(**kwargs) is documented to sort its
+    # fields alphabetically by name internally, and rather than rely on
+    # unverified assumptions about how that resolves against a separately
+    # authored explicit schema, dicts-with-schema is the unambiguous,
+    # officially documented form (name-matched against schema.fields,
+    # never positional). Verified 2026-09-15 after this exact ambiguity
+    # was caught in the Silver notebook's copy of this pattern.
+    df = spark.createDataFrame(bronze_rows, schema=_BRONZE_SCHEMA)
     (
         df.write.format("delta")
         .mode("append")
