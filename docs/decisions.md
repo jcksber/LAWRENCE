@@ -168,3 +168,23 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   rows) -- `to_silver_rows` would have thrown `TypeError` on
   `amount_usd / amount` when `amount_usd` is `None`. Fixed to skip those
   rows instead of crashing; new test case added.
+- **Dune backfill cost incident + fixes (2026-09-15).** First real run of
+  `00c_bronze_backfill_dune.py` (30-day window, daily chunks, `SELECT *`)
+  burned through a 2,500-credit free trial partway through a SINGLE
+  day/venue chunk -- paginated past row offset 415,000 before a 402. The
+  earlier cost-test only measured tiny 1-hour aggregate queries
+  (COUNT(*)/GROUP BY), not full-column trade-level SELECTs at real
+  top-venue volume -- not a like-for-like cost estimate, and that gap
+  should have been flagged before running the real backfill.
+  Worse: the 402 was a raw, unhandled `requests.HTTPError` -- only
+  `_submit` had retry/error-wrapping, `_wait_until_done`/`_fetch_all_rows`
+  didn't, so it crashed the whole notebook. Since Bronze was written only
+  once, at the very end, every credit spent produced zero rows in Bronze.
+  Fixed: `dune_client.py`'s `DuneVenueFilter` now takes an explicit
+  `columns` list (only what `to_bronze_row` needs, not `SELECT *`); a
+  shared `_request` helper wraps every HTTP call site consistently and
+  raises a new `DuneCreditsExhausted` (never retried) immediately on a
+  402; the notebook now writes to Bronze after every chunk instead of
+  once at the end, and aborts the whole run (not just one chunk) on
+  `DuneCreditsExhausted`. `BACKFILL_DAYS` reset to 1 with hourly chunks
+  as a real-cost test at the new column set, before scaling back up.

@@ -26,6 +26,21 @@ real swap these should be nearly equal anyway, and Silver's
 `price_usd = amount_usd / amount` is computed per side using each side's
 own token amount, so this doesn't distort the derived price.
 
+COST INCIDENT, 2026-09-15: a first real run selected all ~30 columns
+(`SELECT *`) chunked by day, and blew through a 2,500-credit free trial
+partway through a SINGLE day/venue chunk (paginated past row offset
+415,000 before hitting a 402). The earlier cost-test that suggested this
+would be cheap only measured tiny 1-hour-window aggregate queries
+(COUNT(*)/GROUP BY), not full-column trade-level SELECTs at real
+top-venue volume -- a materially different cost profile. Two changes as a
+result: `DuneVenueFilter` now carries an explicit `columns` list (only
+what `to_bronze_row` actually needs) instead of `SELECT *`, and
+`DuneCreditsExhausted` is raised immediately on a 402 rather than being
+retried or treated like any other failure, so a caller can abort the
+whole backfill loop instead of burning retry time on every remaining
+chunk. Re-measure real per-query cost at this narrower column set on a
+small window BEFORE sizing anything close to the original 30-day pull.
+
 This client is not used for live/production ingestion -- that stays on
 Bitquery's realtime tier. Run manually from
 notebooks/00c_bronze_backfill_dune.py.
@@ -57,16 +72,31 @@ from .bitquery_client import ChainFamily, Venue
 DUNE_API_BASE = "https://api.dune.com/api/v1"
 
 
+class DuneCreditsExhausted(RuntimeError):
+    """Raised immediately on a 402 Payment Required, never retried --
+    retrying a balance failure wastes time without changing the outcome,
+    and every other in-flight/queued chunk will fail the same way until
+    credits are topped up. Callers (the backfill notebook) should catch
+    this SEPARATELY from RuntimeError and abort the whole run, not just
+    skip the one chunk -- see the module's COST INCIDENT note."""
+
+
 @dataclass(frozen=True)
 class DuneVenueFilter:
     """How to filter Dune's curated trade tables down to one Venue, keyed
     by Venue.name in the caller. A SQL WHERE fragment rather than a single
     generic filter, because Dune's schema differs fundamentally by chain
     (Solana carries an exact program address; EVM rows carry per-pool
-    addresses only, never the shared factory address)."""
+    addresses only, never the shared factory address).
+
+    `columns` is explicit -- NOT `SELECT *` -- because pulling every
+    column at real trade volume is a real, measured cost problem (see
+    module docstring's COST INCIDENT). List only what `to_bronze_row`
+    actually reads for this chain family."""
 
     table: str  # "dex_solana.trades" or "dex.trades"
     where_sql: str  # ANDed with the time-window filter; no trailing AND/OR
+    columns: list[str]
 
 
 class DuneClient:
@@ -95,6 +125,37 @@ class DuneClient:
     def _headers(self) -> dict[str, str]:
         return {"X-Dune-Api-Key": self.api_key, "Content-Type": "application/json"}
 
+    def _request(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
+        """Shared HTTP-with-retry for every Dune API call this client
+        makes. A 402 (out of credits) is raised immediately, never
+        retried -- see DuneCreditsExhausted. Anything else transient
+        (timeouts, connection errors, other non-2xx) gets the normal
+        retry-with-backoff treatment, then wraps into RuntimeError so
+        every call site raises the same, catchable error type instead of
+        a raw requests exception leaking out uncaught (the actual bug
+        behind the 2026-09-15 incident -- only _submit had this before)."""
+        last_err: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                resp = requests.request(
+                    method, url, headers=self._headers(), timeout=self.timeout_s, **kwargs
+                )
+                if resp.status_code == 402:
+                    raise DuneCreditsExhausted(
+                        f"Dune returned 402 Payment Required for {method} {url} "
+                        "-- credits exhausted, not retrying"
+                    )
+                resp.raise_for_status()
+                return resp.json()
+            except DuneCreditsExhausted:
+                raise  # never retry a balance failure
+            except requests.RequestException as exc:
+                last_err = exc
+                time.sleep(2**attempt)
+        raise RuntimeError(
+            f"Dune {method} {url} failed after {self.max_retries} attempts"
+        ) from last_err
+
     def fetch_historical_trades(
         self,
         venue_filter: DuneVenueFilter,
@@ -103,9 +164,12 @@ class DuneClient:
         performance: str = "medium",
     ) -> list[dict[str, Any]]:
         """Runs one bounded [since_iso, till_iso) query and returns every
-        result row (paginated automatically past `page_size`)."""
+        result row (paginated automatically past `page_size`). Selects
+        only `venue_filter.columns` -- not `SELECT *` -- see
+        DuneVenueFilter's docstring."""
+        columns_sql = ", ".join(venue_filter.columns)
         sql = (
-            f"SELECT * FROM {venue_filter.table} "
+            f"SELECT {columns_sql} FROM {venue_filter.table} "
             f"WHERE block_time >= TIMESTAMP '{since_iso}' "
             f"AND block_time < TIMESTAMP '{till_iso}' "
             f"AND {venue_filter.where_sql}"
@@ -115,34 +179,21 @@ class DuneClient:
         return self._fetch_all_rows(execution_id)
 
     def _submit(self, sql: str, performance: str) -> str:
-        last_err: Exception | None = None
-        for attempt in range(self.max_retries):
-            try:
-                resp = requests.post(
-                    f"{DUNE_API_BASE}/sql/execute",
-                    json={"sql": sql, "performance": performance},
-                    headers=self._headers(),
-                    timeout=self.timeout_s,
-                )
-                resp.raise_for_status()
-                return resp.json()["execution_id"]
-            except (requests.RequestException, KeyError) as exc:
-                last_err = exc
-                time.sleep(2**attempt)
-        raise RuntimeError(
-            f"Dune query submission failed after {self.max_retries} attempts"
-        ) from last_err
+        data = self._request(
+            "POST",
+            f"{DUNE_API_BASE}/sql/execute",
+            json={"sql": sql, "performance": performance},
+        )
+        try:
+            return data["execution_id"]
+        except KeyError as exc:
+            raise RuntimeError(f"Dune submit response missing execution_id: {data}") from exc
 
     def _wait_until_done(self, execution_id: str) -> None:
         deadline = time.monotonic() + self.poll_timeout_s
         while time.monotonic() < deadline:
-            resp = requests.get(
-                f"{DUNE_API_BASE}/execution/{execution_id}/status",
-                headers=self._headers(),
-                timeout=self.timeout_s,
-            )
-            resp.raise_for_status()
-            state = str(resp.json().get("state", "")).upper()
+            data = self._request("GET", f"{DUNE_API_BASE}/execution/{execution_id}/status")
+            state = str(data.get("state", "")).upper()
             if "COMPLET" in state or "SUCCESS" in state:
                 return
             if "FAIL" in state or "CANCEL" in state:
@@ -156,14 +207,12 @@ class DuneClient:
         rows: list[dict[str, Any]] = []
         offset = 0
         while True:
-            resp = requests.get(
+            data = self._request(
+                "GET",
                 f"{DUNE_API_BASE}/execution/{execution_id}/results",
-                headers=self._headers(),
                 params={"limit": self.page_size, "offset": offset},
-                timeout=self.timeout_s,
             )
-            resp.raise_for_status()
-            page_rows = resp.json().get("result", {}).get("rows", [])
+            page_rows = data.get("result", {}).get("rows", [])
             rows.extend(page_rows)
             if len(page_rows) < self.page_size:
                 break

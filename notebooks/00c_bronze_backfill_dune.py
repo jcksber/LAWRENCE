@@ -6,25 +6,29 @@
 # MAGIC / `fetch_historical_trades` in `bitquery_client.py`) -- that path needs an
 # MAGIC Enterprise plan, confirmed via a live 403. Dune's curated `dex.trades`
 # MAGIC (EVM) / `dex_solana.trades` (Solana) tables cover the same historical
-# MAGIC range without that gate, confirmed via real bounded queries against both
-# MAGIC venues (see docs/decisions.md, 2026-09-15).
+# MAGIC range without that gate (see docs/decisions.md, 2026-09-15).
+# MAGIC
+# MAGIC **COST INCIDENT, 2026-09-15**: a first version of this notebook selected
+# MAGIC all ~30 columns (`SELECT *`) chunked by day, and burned through a
+# MAGIC 2,500-credit free trial partway through a SINGLE day/venue chunk
+# MAGIC (paginated past row offset 415,000 before a 402). Worse, the 402 was an
+# MAGIC unhandled `requests.HTTPError` that crashed the whole notebook before
+# MAGIC the (single, end-of-run) Bronze write ever executed -- every credit
+# MAGIC spent produced zero rows in Bronze. Fixed on both fronts:
+# MAGIC - `dune_client.py` now selects only the columns `to_bronze_row` actually
+# MAGIC   needs (not `SELECT *`), and raises `DuneCreditsExhausted` immediately
+# MAGIC   on a 402 instead of a raw, unhandled `HTTPError`.
+# MAGIC - This notebook now writes to Bronze after EVERY chunk, not once at the
+# MAGIC   end, so a future failure can never again erase already-fetched data.
+# MAGIC - `BACKFILL_DAYS` defaults to a small test value below, chunked by
+# MAGIC   HOUR (a day's worth of one venue was already too much). Confirm real
+# MAGIC   per-query cost at this narrower column set before raising it.
 # MAGIC
 # MAGIC **KNOWN GAP, accepted deliberately**: rows written by this notebook have
 # MAGIC `tx_fee_native`/`tx_fee_usd` = NULL and `source = 'dune'` -- neither Dune
 # MAGIC table carries a usable on-chain transaction fee. Live rows from
 # MAGIC `00_bronze_dex_ingestion.py` (`source = 'bitquery'`) are unaffected. See
 # MAGIC `dune_client.py`'s module docstring and `docs/decisions.md`.
-# MAGIC
-# MAGIC Writes straight into `lawrence.bronze.dex_trades` (append, same as the
-# MAGIC live ingestion notebook) -- Silver already dedups on
-# MAGIC `(dex_venue, tx_hash, token_id)`, so re-running a chunk here is a no-op
-# MAGIC downstream, not a duplicate.
-# MAGIC
-# MAGIC Chunked by day to keep each Dune query's result set modest (unverified
-# MAGIC at scale for our exact filtered venues -- daily chunks are a conservative
-# MAGIC starting point, not a measured optimum). At the measured cost of the
-# MAGIC cost-test queries (~0.08 credits/query), 30 days x 2 venues = 60 queries
-# MAGIC is a few credits, trivial against the 2,500-credit free trial.
 
 # COMMAND ----------
 
@@ -33,13 +37,23 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.append("../src")
 from ingestion.bitquery_client import ChainFamily, Venue  # noqa: E402
-from ingestion.dune_client import DuneClient, DuneVenueFilter, to_bronze_row  # noqa: E402
+from ingestion.dune_client import (  # noqa: E402
+    DuneClient,
+    DuneCreditsExhausted,
+    DuneVenueFilter,
+    to_bronze_row,
+)
 
 # COMMAND ----------
 
 DUNE_API_KEY = dbutils.secrets.get(scope="lawrence", key="dune_api_key")
 
-BACKFILL_DAYS = 30
+# START SMALL. This is a re-run after a cost incident (see markdown above)
+# -- confirm real per-query cost at the new narrower column set before
+# raising this anywhere near the original 30-day target.
+BACKFILL_DAYS = 1
+CHUNK_HOURS = 1  # a full day already exceeded 415k rows for one venue
+
 BRONZE_TABLE = "lawrence.bronze.dex_trades"
 
 # Same Venue identities as the live ingestion notebook (00_bronze_dex_ingestion.py)
@@ -59,18 +73,29 @@ VENUES: list[Venue] = [
     ),
 ]
 
-# How to filter Dune's tables down to each Venue above -- see dune_client.py's
-# DuneVenueFilter docstring for why this can't just reuse dex_program_or_address
-# on the EVM side (Dune's EVM rows carry per-pool addresses, not the shared
-# factory address).
+# How to filter Dune's tables down to each Venue above, AND which columns
+# to pull -- explicit, not `SELECT *` (see COST INCIDENT note). Only what
+# dune_client.to_bronze_row actually reads for that chain family.
 DUNE_VENUE_FILTERS: dict[str, DuneVenueFilter] = {
     "raydium_v4": DuneVenueFilter(
         table="dex_solana.trades",
         where_sql="project_program_id = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8'",
+        columns=[
+            "block_time", "tx_id", "project", "version", "version_name",
+            "token_bought_symbol", "token_sold_symbol",
+            "token_bought_amount", "token_sold_amount", "amount_usd",
+            "token_bought_mint_address", "token_sold_mint_address",
+        ],
     ),
     "uniswap_v3_base": DuneVenueFilter(
         table="dex.trades",
         where_sql="blockchain = 'base' AND project = 'uniswap' AND version = '3'",
+        columns=[
+            "block_time", "tx_hash", "project", "version",
+            "token_bought_symbol", "token_sold_symbol",
+            "token_bought_amount", "token_sold_amount", "amount_usd",
+            "token_bought_address", "token_sold_address",
+        ],
     ),
 }
 
@@ -86,17 +111,20 @@ window_end = datetime.now(timezone.utc) - timedelta(days=2)
 window_start = window_end - timedelta(days=BACKFILL_DAYS)
 
 print(f"Backfill window: [{window_start.isoformat()}, {window_end.isoformat()})")
-print(f"Venues: {[v.name for v in VENUES]}")
+print(f"Venues: {[v.name for v in VENUES]}, chunk size: {CHUNK_HOURS}h")
 
 # COMMAND ----------
 
-bronze_rows = []
+from pyspark.sql import Row  # noqa: E402
+
+total_rows_written = 0
 chunk_start = window_start
 chunk_n = 0
-total_chunks = BACKFILL_DAYS * len(VENUES)
+total_chunks = int((window_end - window_start).total_seconds() // 3600 // CHUNK_HOURS) * len(VENUES)
+aborted = False
 
-while chunk_start < window_end:
-    chunk_end = min(chunk_start + timedelta(days=1), window_end)
+while chunk_start < window_end and not aborted:
+    chunk_end = min(chunk_start + timedelta(hours=CHUNK_HOURS), window_end)
     for venue in VENUES:
         chunk_n += 1
         venue_filter = DUNE_VENUE_FILTERS[venue.name]
@@ -106,43 +134,48 @@ while chunk_start < window_end:
                 since_iso=chunk_start.strftime("%Y-%m-%d %H:%M:%S"),
                 till_iso=chunk_end.strftime("%Y-%m-%d %H:%M:%S"),
             )
-            bronze_rows.extend(to_bronze_row(r, venue, ingested_at) for r in dune_rows)
-            print(
-                f"[{chunk_n}/{total_chunks}] {venue.name} "
-                f"[{chunk_start.date()}, {chunk_end.date()}): {len(dune_rows)} rows"
-            )
+        except DuneCreditsExhausted as exc:
+            # Every remaining chunk will fail the same way -- stop the
+            # whole run now instead of burning retry time on each of
+            # them. Whatever already got written (see below, written
+            # per-chunk, not batched) is safe.
+            print(f"[{chunk_n}/{total_chunks}] {venue.name} ABORTING RUN: {exc}")
+            aborted = True
+            break
         except (RuntimeError, TimeoutError) as exc:
-            # One chunk failing shouldn't take down the whole backfill --
-            # log it and keep going; re-run this notebook afterward to
-            # pick up any chunks that failed (harmless re-fetch of the
-            # ones that succeeded, since Silver dedups downstream).
-            print(f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start.date()}, {chunk_end.date()}) FAILED: {exc}")
+            # One chunk failing for another reason shouldn't take down
+            # the rest -- log and move on.
+            print(f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start}, {chunk_end}) FAILED: {exc}")
+            continue
+
+        print(
+            f"[{chunk_n}/{total_chunks}] {venue.name} "
+            f"[{chunk_start}, {chunk_end}): {len(dune_rows)} rows"
+        )
+        if dune_rows:
+            bronze_rows = [to_bronze_row(r, venue, ingested_at) for r in dune_rows]
+            df = spark.createDataFrame([Row(**r) for r in bronze_rows])
+            (
+                df.write.format("delta")
+                .mode("append")
+                .option("mergeSchema", "true")
+                .saveAsTable(BRONZE_TABLE)
+            )
+            total_rows_written += len(bronze_rows)
     chunk_start = chunk_end
 
-print(f"\nTotal rows fetched across all chunks: {len(bronze_rows)}")
-
-# COMMAND ----------
-
-if bronze_rows:
-    from pyspark.sql import Row
-
-    df = spark.createDataFrame([Row(**r) for r in bronze_rows])
-    (
-        df.write.format("delta")
-        .mode("append")
-        .option("mergeSchema", "true")
-        .saveAsTable(BRONZE_TABLE)
-    )
-    print(f"Appended {df.count()} rows to {BRONZE_TABLE} (source=dune)")
-else:
-    print("No rows fetched -- nothing written.")
+print(f"\nTotal rows written to {BRONZE_TABLE} (source=dune) this run: {total_rows_written}")
+if aborted:
+    print("Run stopped early on credit exhaustion -- see message above.")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **Next**: check your Dune credit balance to confirm real cost at this
-# MAGIC scale, then run `01_silver_token_trades.py` (or the whole job) with a
-# MAGIC wide enough lookback to pick up these backfilled rows -- they're
-# MAGIC historical, so the usual 60-minute Silver lookback won't see them;
-# MAGIC widen `LOOKBACK_MINUTES` there temporarily for one run, or query Bronze
-# MAGIC directly for `source = 'dune'` rows if that's simpler.
+# MAGIC **Next**: check your Dune credit balance and divide by the number of
+# MAGIC chunks that actually completed above -- that's the real per-query cost
+# MAGIC at this narrower column set. Report it back before raising
+# MAGIC `BACKFILL_DAYS`/`CHUNK_HOURS` any further.
+# MAGIC
+# MAGIC Once you have real backfilled data, Silver's usual 60-minute lookback
+# MAGIC won't see it -- widen `LOOKBACK_MINUTES` in `01_silver_token_trades.py`
+# MAGIC for one run, or query Bronze directly for `source = 'dune'` rows.
