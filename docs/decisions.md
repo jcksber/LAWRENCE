@@ -243,3 +243,10 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   editor before trusting it, since those chunks are already logged
   `success` in the progress table and would be silently skipped forever
   on a re-run if it turns out to be a bug.
+- **Open question resolved: raydium_v4's 0-row days are real, not a bug
+  (2026-09-15).** Verified independently via Dune's SQL editor directly
+  (same filter, run outside the backfill notebook): `raydium_v4` genuinely
+  had 0 matching trades on 2026-08-15. Not a query bug -- legacy AMM
+  volume likely migrated to newer Raydium program versions (CPMM/CLMM) by
+  this point. The `success`-with-0-rows chunks in the progress table are
+  correct and don't need clearing.
