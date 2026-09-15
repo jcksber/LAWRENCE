@@ -108,6 +108,65 @@ query NewPoolTrades($program: String!, $since: DateTime!, $limit: Int!) {
 # in particular may need adjusting per-protocol (some are keyed by factory
 # address, some by pool/pair address).
 
+# Bounded historical backfill queries -- same shape as the live queries
+# above (same response path, so the existing Bronze _normalize() works
+# unchanged), but add `till` (a closed time window, not "everything since
+# X") and `dataset: archive`. Confirmed via Bitquery's own docs examples
+# (docs.bitquery.io/docs/schema/evm/dextrades/,
+# .../Solana/historical-aggregate-data/) against DEXTradeByTokens, NOT yet
+# confirmed against our actual DEXTrades root -- test with a small bounded
+# window before trusting this for a real backfill; see notebooks/
+# 00b_bronze_backfill_test.py.
+_EVM_BACKFILL_QUERY = """
+query HistoricalPoolTrades($network: evm_network!, $program: String!, $since: DateTime!, $till: DateTime!, $limit: Int!) {
+  EVM(network: $network, dataset: archive) {
+    DEXTrades(
+      limit: {count: $limit}
+      orderBy: {descending: Block_Time}
+      where: {
+        Trade: {Dex: {OwnerAddress: {is: $program}}}
+        Block: {Time: {since: $since, till: $till}}
+      }
+    ) {
+      Block { Time }
+      Transaction { Hash }
+      Trade {
+        Buy  { Currency { SmartContract Symbol } Amount AmountInUSD }
+        Sell { Currency { SmartContract Symbol } Amount AmountInUSD }
+        Dex  { OwnerAddress ProtocolName }
+      }
+      joinTransactions(join: inner, Transaction_Hash: Transaction_Hash) {
+        Fee { SenderFee SenderFeeInUSD }
+      }
+    }
+  }
+}
+"""
+
+_SOLANA_BACKFILL_QUERY = """
+query HistoricalPoolTrades($program: String!, $since: DateTime!, $till: DateTime!, $limit: Int!) {
+  Solana(dataset: archive) {
+    DEXTrades(
+      limit: {count: $limit}
+      orderBy: {descending: Block_Time}
+      where: {
+        Trade: {Dex: {ProgramAddress: {is: $program}}}
+        Block: {Time: {since: $since, till: $till}}
+      }
+    ) {
+      Block { Time }
+      Transaction { Signature Fee FeeInUSD }
+      Trade {
+        Buy  { Currency { MintAddress Symbol } Amount AmountInUSD }
+        Sell { Currency { MintAddress Symbol } Amount AmountInUSD }
+        Dex  { ProgramAddress ProtocolName }
+        Market { MarketAddress }
+      }
+    }
+  }
+}
+"""
+
 
 @dataclass
 class BitqueryClient:
@@ -186,4 +245,74 @@ class BitqueryClient:
         raise RuntimeError(
             f"Bitquery fetch failed for venue={venue.name} after "
             f"{self.max_retries} attempts"
+        ) from last_err
+
+    def fetch_historical_trades(
+        self, venue: Venue, since_iso: str, till_iso: str, limit: int = 1000
+    ) -> list[dict[str, Any]]:
+        """Bounded-window historical backfill fetch -- `[since_iso, till_iso)`
+        against Bitquery's `archive` dataset, NOT the live/recent path
+        `fetch_new_pool_trades` uses. Caller is responsible for sizing the
+        window small enough to stay under `limit` (a response with exactly
+        `limit` rows means the window has more data than was returned --
+        bisect it and re-fetch both halves rather than trusting it's
+        complete). Same response shape as `fetch_new_pool_trades`, so the
+        same Bronze `_normalize()` works on either.
+        """
+        if venue.chain_family == ChainFamily.EVM:
+            if not venue.network:
+                raise ValueError(f"Venue {venue.name} is EVM but has no network set")
+            query, variables, path = (
+                _EVM_BACKFILL_QUERY,
+                {
+                    "network": venue.network,
+                    "program": venue.dex_program_or_address,
+                    "since": since_iso,
+                    "till": till_iso,
+                    "limit": limit,
+                },
+                ("data", "EVM", "DEXTrades"),
+            )
+        elif venue.chain_family == ChainFamily.SOLANA:
+            query, variables, path = (
+                _SOLANA_BACKFILL_QUERY,
+                {
+                    "program": venue.dex_program_or_address,
+                    "since": since_iso,
+                    "till": till_iso,
+                    "limit": limit,
+                },
+                ("data", "Solana", "DEXTrades"),
+            )
+        else:
+            raise NotImplementedError(
+                f"No backfill query template for chain family {venue.chain_family}"
+            )
+
+        payload = {"query": query, "variables": variables}
+
+        last_err: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                resp = requests.post(
+                    self.endpoint,
+                    json=payload,
+                    headers=self._headers(),
+                    timeout=self.timeout_s,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if "errors" in data:
+                    raise RuntimeError(f"Bitquery GraphQL errors: {data['errors']}")
+                result = data
+                for key in path:
+                    result = result[key]
+                return result
+            except (requests.RequestException, RuntimeError, KeyError) as exc:
+                last_err = exc
+                time.sleep(2**attempt)
+
+        raise RuntimeError(
+            f"Bitquery historical fetch failed for venue={venue.name} "
+            f"window=[{since_iso}, {till_iso}) after {self.max_retries} attempts"
         ) from last_err

@@ -118,3 +118,15 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   survivorship-bias risk (quietly excludes likely-rugged tokens rather than
   labeling their real loss) — documented in `docs/gold_spec.md`, revisit
   once Bronze ingests pool-liquidity state.
+- **Paused the recurring schedule again (2026-09-15).** Continuous 15-min
+  Bronze/Silver polling was projected by Bitquery to exhaust API credits
+  within days of being unpaused — the account's projected exhaustion date
+  (Oct 2) was based on earlier sporadic manual runs, not sustained 15-min
+  polling, so real burn rate once continuous was higher than that estimate.
+  Rejected going tighter (1-min) for the same reason, worse. Replacing
+  perpetual live polling with a bounded, one-time historical backfill for
+  this phase (accumulating training-data volume, not production
+  freshness) — see the backfill design notes to follow. Bitquery's
+  dashboard doesn't expose a per-query credit breakdown, so real cost is
+  being measured empirically via a small bounded test query before
+  committing to a full backfill.

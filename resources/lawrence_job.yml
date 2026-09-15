@@ -10,9 +10,13 @@ resources:
         quartz_cron_expression: "0 */15 * * * ?" # every 15 min — tune once
                                                   # you know real venue volume
         timezone_id: "UTC"
-        pause_status: UNPAUSED # both Bronze and Silver validated end-to-end;
-                                 # running on schedule to start accumulating
-                                 # real history for Gold to train on
+        pause_status: PAUSED # paused again 2026-09-15: continuous 15-min
+                              # polling was projected to exhaust Bitquery API
+                              # credits within days (see decisions.md).
+                              # Switching to a bounded, one-time historical
+                              # backfill instead of perpetual live polling --
+                              # unpause only once that's designed and its
+                              # actual credit cost is known.
 
       tasks:
         - task_key: bronze_dex_pool_events
