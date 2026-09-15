@@ -188,3 +188,15 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   once at the end, and aborts the whole run (not just one chunk) on
   `DuneCreditsExhausted`. `BACKFILL_DAYS` reset to 1 with hourly chunks
   as a real-cost test at the new column set, before scaling back up.
+- **Correction to the entry above (2026-09-15, later same day).** The
+  failed run actually got 7 full days through fine (daily chunks, both
+  venues) before the 8th day's chunk spiked in volume and drained the
+  remaining credits -- "a full day was already too much for one venue"
+  was wrong; daily chunking itself was never the problem. That 7 days of
+  fetched data never reached Bronze -- confirmed gone, not recoverable --
+  because the crash happened before the (then one-shot, end-of-run) write
+  ever executed. The per-chunk-write fix already made this session is
+  exactly what prevents this specific loss from recurring.
+  `notebooks/00c_bronze_backfill_dune.py` reset to `BACKFILL_DAYS = 5`
+  with daily chunks (not hourly) as the next real-cost test, at the new
+  narrower column set, once credits are available again.

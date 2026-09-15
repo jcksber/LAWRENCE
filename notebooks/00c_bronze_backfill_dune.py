@@ -19,10 +19,14 @@
 # MAGIC   needs (not `SELECT *`), and raises `DuneCreditsExhausted` immediately
 # MAGIC   on a 402 instead of a raw, unhandled `HTTPError`.
 # MAGIC - This notebook now writes to Bronze after EVERY chunk, not once at the
-# MAGIC   end, so a future failure can never again erase already-fetched data.
-# MAGIC - `BACKFILL_DAYS` defaults to a small test value below, chunked by
-# MAGIC   HOUR (a day's worth of one venue was already too much). Confirm real
-# MAGIC   per-query cost at this narrower column set before raising it.
+# MAGIC   end, so a future failure can never again erase already-fetched data
+# MAGIC   -- the failed run above actually fetched 7 good days before the 8th
+# MAGIC   day's chunk drained the rest, but none of it was ever written, and
+# MAGIC   it's confirmed gone.
+# MAGIC - `BACKFILL_DAYS` reset to a real test value below with DAILY chunks
+# MAGIC   (daily chunking itself was fine -- 7 of them succeeded; no need for
+# MAGIC   finer than that). Confirm real per-query cost at the new narrower
+# MAGIC   column set before raising it toward the original 30-day target.
 # MAGIC
 # MAGIC **KNOWN GAP, accepted deliberately**: rows written by this notebook have
 # MAGIC `tx_fee_native`/`tx_fee_usd` = NULL and `source = 'dune'` -- neither Dune
@@ -48,11 +52,17 @@ from ingestion.dune_client import (  # noqa: E402
 
 DUNE_API_KEY = dbutils.secrets.get(scope="lawrence", key="dune_api_key")
 
-# START SMALL. This is a re-run after a cost incident (see markdown above)
-# -- confirm real per-query cost at the new narrower column set before
-# raising this anywhere near the original 30-day target.
-BACKFILL_DAYS = 1
-CHUNK_HOURS = 1  # a full day already exceeded 415k rows for one venue
+# START SMALL-ish. This is a re-run after a cost incident (see markdown
+# above). Correction: the failed run actually got 7 full days through
+# fine (daily chunking) before the 8th day's chunk spiked and drained the
+# rest -- so daily chunking itself is fine, hourly was an overcorrection.
+# That data never made it to Bronze though (crashed before the one-shot
+# write ran, and this was BEFORE the per-chunk-write fix below existed) --
+# confirmed gone, not recoverable. 5 days at the new narrower column set
+# is a real test of whether that set meaningfully lowers cost vs. the
+# SELECT * run, before raising this toward the 30-day target.
+BACKFILL_DAYS = 5
+CHUNK_HOURS = 24  # daily -- proven fine at real volume, no need for finer
 
 BRONZE_TABLE = "lawrence.bronze.dex_trades"
 
