@@ -889,3 +889,75 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   explanation. Gold v1 is unblocked; next real step is Phase 3 (baseline
   + first trained model) per docs/game_plan.md, not further Gold
   debugging.
+
+- **Phase 3 kickoff: entry baselines + first ML model (2026-09-17).**
+  Three scope decisions made with Jack before writing any code (see
+  docs/game_plan.md §6's Phase 3):
+  1. **Entry only this pass**, not entry+exit together -- exit_candidates
+     has 24% the token coverage entry does right now (see the gap
+     investigation above) and label_spec.md already treats them as
+     separate models with different needs. Exit gets its own pass once
+     this one's pipeline (walk-forward, backtest metrics, MLflow logging)
+     is proven out.
+  2. **Baseline B is a stand-in, not the real thing.** game_plan.md §5's
+     originally-envisioned "smarter" baseline ("liquidity > X and no
+     prior rugs from this deployer") needs pool-liquidity-state and
+     deployer-wallet data that doesn't exist yet (the same Phase 1 gap
+     tracked since the rug-clamping work). Substituted the closest signal
+     Gold v1 actually has: a trailing-volume + buy/sell-ratio momentum
+     filter (`BASELINE_B_MIN_TRAILING_VOLUME_USD`/
+     `BASELINE_B_MIN_BUY_SELL_RATIO` in `src/backtest/baselines.py`,
+     placeholders, not measured). Documented plainly as a stand-in to
+     swap out once real liquidity/deployer data lands, not a permanent
+     design.
+  3. **Regression on `y_entry`, not binary classification.** `y_entry` is
+     already a continuous forward return including the interim rug-clamp
+     -- predicting it directly supports ranking candidates by expected
+     return (how an entry decision actually gets made) and keeps a -100%
+     rug loss as real magnitude instead of collapsing it into the same
+     "loss" bucket as a -5% dip.
+
+  New code, all pure-Python/pandas (no PySpark), matching the existing
+  src/features/ split -- notebooks do the Spark-table-read glue only:
+  - `src/backtest/baselines.py` -- Baseline A ("buy everything," mirrors
+    BIA's actual current rule) and Baseline B (above).
+  - `src/backtest/walk_forward.py` -- `walk_forward_folds` (expanding-
+    window time-based splits -- game_plan.md §5 is explicit that a random
+    split on time-series token data is how these backtests lie) and
+    `simulate_trades` (applies round-trip trading costs -- 30bps fee +
+    50bps slippage placeholders -- and reports EV/trade, win rate, max
+    drawdown per game_plan.md §0/§2's real success metric, not "average
+    return").
+  - `src/models/entry_model.py` -- `LGBMRegressor` on the 6 numeric
+    trailing-activity columns Gold v1 has (chain_family/dex_venue etc.
+    deliberately left out of v1 -- tracked as a follow-up, not an
+    oversight). Rug-clamped rows are NOT filtered from training -- real
+    signal, not noise, per gold_spec.md's whole rationale for clamping
+    instead of dropping.
+  - `notebooks/04_entry_baseline_and_model.py` -- reads
+    `lawrence.gold.entry_candidates` (select()-trimmed before toPandas(),
+    same OOM-avoidance lesson as notebooks 02/03), runs all three
+    strategies through the same walk-forward folds, logs params/metrics/
+    the last fold's model to MLflow (already in requirements.txt --
+    Databricks-native, ties into game_plan.md §7's ML-Associate-lifecycle
+    framing), prints a comparison table.
+
+  **Bug caught before Jack ever ran it:** wrote standalone tests for
+  `walk_forward_folds` first (verified against real pandas in the
+  device_bash sandbox, which has pandas/numpy but not pytest/sklearn/
+  lightgbm/mlflow -- no network there either, confirmed by a failed `pip
+  install`). `len(folds) == n_folds` failed -- fold 0 always tested on the
+  very first time bucket, which structurally has nothing before it to
+  train on, so it silently got dropped every time (n_folds=4 only ever
+  returned 3 folds). Fixed by reserving one extra boundary bucket purely
+  as the initial training seed (`n_folds + 2` boundary points instead of
+  `n_folds + 1`) so test folds are always buckets 1..n_folds, each
+  guaranteed a non-empty train window before it. All 9
+  baseline/walk-forward tests pass now against real pandas.
+  `tests/test_entry_model.py` also written (skips cleanly via
+  `pytest.importorskip` where lightgbm isn't installed, same principle as
+  `test_label_point_in_time.py`'s existing scaffold) but NOT independently
+  run -- lightgbm/scikit-learn aren't available in this sandbox either.
+  Jack: run `pytest` in your own terminal to confirm before trusting the
+  model-training path fully, same caveat as every other lightgbm-adjacent
+  change this session.

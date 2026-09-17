@@ -124,6 +124,14 @@ Join on-chain and social data by token + time, build the Gold feature table, and
 **Phase 3 — Baseline + first model, 2–4 weeks**
 Build the rules-based baseline, then a first ML model (start simple — gradient boosted trees on tabular features before anything fancier). Walk-forward backtest both, with realistic fees/slippage/latency assumptions.
 
+- **In progress (2026-09-17):** entry side only for this pass (see
+  decisions.md) — `src/backtest/baselines.py` (two baselines),
+  `src/backtest/walk_forward.py` (expanding-window folds + trade
+  simulation), `src/models/entry_model.py` (LightGBM regressor on
+  `y_entry`), orchestrated by `notebooks/04_entry_baseline_and_model.py`
+  with MLflow logging. Exit's baseline+model pass is a follow-up, not
+  forgotten — see decisions.md for why entry went first.
+
 **Phase 4 — Paper trading / shadow mode, 3–4 weeks minimum**
 Run LAWRENCE live, generating buy/sell signals against real-time data, but with **no real capital**. Compare live signal quality to backtest expectations — this is where most trading-bot projects discover their backtest was lying to them, and you want to find that out for free.
 
