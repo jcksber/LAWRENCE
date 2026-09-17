@@ -961,3 +961,46 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   Jack: run `pytest` in your own terminal to confirm before trusting the
   model-training path fully, same caveat as every other lightgbm-adjacent
   change this session.
+
+- **First walk-forward run's backtest was meaningless: 779 rows with
+  billions-of-percent "returns," from near-zero-priced tokens, not a bug
+  (2026-09-17).** notebooks/04's first real run: LightGBM's own
+  "Start training from score" line was the first tell -- fold 0's target
+  mean was a sane 0.0986, but folds 1-4 jumped to 16,791.9 / 11,245.1 /
+  8,612.7 / 6,986.2. The resulting backtest table confirmed it was worse
+  than just the model: Baseline A alone showed `total_return` of 7.97e9
+  (fold 0) and 1.83e10 (fold 4) -- not real numbers for any strategy,
+  and since baselines/model all score against the same underlying
+  `y_entry`, this was a label problem, not a model problem.
+  Confirmed with two queries (Jack): `SELECT ... ORDER BY y_entry DESC
+  LIMIT 20` showed the actual offending rows -- price_at_t values from
+  6e-15 to 7e-8 (one exception at 0.0037, likely a single bad price_exit
+  trade, absorbed by the same fix) -- and `SELECT COUNT(*) WHERE
+  y_entry > 100` came back 779 (0.061% of entry_candidates' 1,276,167
+  rows), max_y_entry = 16,693,038,859.
+  Root cause: these tokens are genuinely priced at 1e-8 to 1e-15 USD --
+  plausible real data (huge total supply, near-zero market cap), not a
+  decimals/parsing bug (checked `silver_token_trades.py`/`dune_client.py`:
+  Dune's `token_bought_amount`/`token_sold_amount` are already human-unit,
+  decimal-adjusted). At that price scale, a tiny absolute price move
+  produces an astronomical PERCENTAGE "return" -- mathematically real
+  given the raw trade log, but not something any real trade could capture
+  without knowing actual pool depth, which is the same liquidity-data gap
+  already tracked in gold_spec.md's feature-set section and
+  game_plan.md's Phase 1 (this is now the third distinct place that gap
+  has surfaced this session, after rug-clamping and Baseline B).
+  Fix: added `RETURN_WINSORIZE_CAP = 100.0` and `winsorize_return()` to
+  `gold_features.py`, next to `RUG_CLAMP_RETURN` -- both
+  `src/models/entry_model.py` (training target) and
+  `src/backtest/walk_forward.py` (`simulate_trades`) now clip through it.
+  Deliberately a CLIP, not a drop (game_plan.md §2's survivorship-bias
+  warning applies to silently dropping extreme winners just as much as
+  rugs), and deliberately NOT written back into Gold itself -- Gold stays
+  the raw, point-in-time-correct ground truth; only consumers winsorize.
+  This also corrects `label_spec.md`'s original plan ("keep the raw value
+  for backtest P&L simulation") -- that assumption didn't survive contact
+  with real data, updated in place there. Verified `winsorize_return`
+  (scalar and pandas Series) plus the full existing gold_features/
+  baselines/walk_forward suite (34/34) against real pandas in the
+  device_bash sandbox. Re-running notebooks/04 with this fix in is the
+  next step -- not done yet.

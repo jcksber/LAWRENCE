@@ -6,6 +6,7 @@ builds. No PySpark/Databricks dependency, so these run in plain CI.
 from datetime import datetime, timedelta, timezone
 
 from features.gold_features import (
+    RETURN_WINSORIZE_CAP,
     RUG_CLAMP_RETURN,
     _parse,
     build_entry_row,
@@ -13,6 +14,7 @@ from features.gold_features import (
     price_at,
     sample_assessment_times,
     trailing_activity_features,
+    winsorize_return,
 )
 
 T0 = datetime(2026, 9, 14, 0, 0, 0, tzinfo=timezone.utc)
@@ -229,3 +231,22 @@ def test_sample_assessment_times_grid_spans_first_to_last_trade():
 
 def test_sample_assessment_times_empty_for_no_trades():
     assert sample_assessment_times([]) == []
+
+
+def test_winsorize_return_leaves_values_within_the_cap_untouched():
+    assert winsorize_return(0.5) == 0.5
+    assert winsorize_return(-1.0) == -1.0  # RUG_CLAMP_RETURN itself
+    assert winsorize_return(RETURN_WINSORIZE_CAP) == RETURN_WINSORIZE_CAP
+
+
+def test_winsorize_return_clips_extreme_values_to_the_cap():
+    assert winsorize_return(16_693_038_859.0) == RETURN_WINSORIZE_CAP
+    assert winsorize_return(-500.0) == -RETURN_WINSORIZE_CAP
+
+
+def test_winsorize_return_works_on_a_pandas_series():
+    import pandas as pd
+
+    y = pd.Series([0.5, 16_693_038_859.0, -1.0, -500.0])
+    result = winsorize_return(y)
+    assert result.tolist() == [0.5, RETURN_WINSORIZE_CAP, -1.0, -RETURN_WINSORIZE_CAP]

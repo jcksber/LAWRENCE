@@ -11,10 +11,14 @@ Two responsibilities, deliberately separate:
   is explicit that a random train/test split on time-series token data is
   exactly how these backtests lie.
 - `simulate_trades`: given which rows a strategy (baseline or model) would
-  have entered and the real forward return for each, applies round-trip
-  trading costs and reports the numbers game_plan.md §0/§2 actually care
-  about (EV/trade, win rate, max drawdown) instead of a naive "average
-  return," which game_plan.md itself warns is a misleading target.
+  have entered and the real forward return for each, winsorizes that
+  return (see gold_features.py's RETURN_WINSORIZE_CAP -- real Gold data
+  has ~0.06% of rows with "returns" in the billions-of-percent range,
+  artifacts of near-zero-priced tokens, not real capturable winners),
+  applies round-trip trading costs, and reports the numbers game_plan.md
+  §0/§2 actually care about (EV/trade, win rate, max drawdown) instead of
+  a naive "average return," which game_plan.md itself warns is a
+  misleading target.
 
 KNOWN SIMPLIFICATION (v1, not yet addressed): `simulate_trades` treats
 every entered candidate as an independent, equal-sized bet and does not
@@ -30,6 +34,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pandas as pd
+
+from features.gold_features import RETURN_WINSORIZE_CAP, winsorize_return
 
 
 def walk_forward_folds(
@@ -115,12 +121,17 @@ def simulate_trades(
     real fill data exists.
 
     `y_true` is the row's already point-in-time-correct forward return
-    (`y_entry`, including the interim rug-clamp -- see gold_spec.md) --
-    this function adds trading costs on top, it does not touch label
-    correctness. Assumes `y_true` is already ordered chronologically by
-    assessment_time (see walk_forward_folds) -- the cumulative curve
-    otherwise doesn't mean anything.
+    (`y_entry`, including the interim rug-clamp -- see gold_spec.md).
+    Winsorized to `RETURN_WINSORIZE_CAP` before costs are applied
+    (2026-09-17, see gold_features.py -- real Gold data has a long right
+    tail of billions-of-percent "returns" from near-zero-priced tokens
+    that would otherwise dominate every metric below; label_spec.md's
+    original plan to keep backtest values unclipped didn't survive
+    contact with real data). Assumes `y_true` is already ordered
+    chronologically by assessment_time (see walk_forward_folds) -- the
+    cumulative curve otherwise doesn't mean anything.
     """
+    y_true = winsorize_return(y_true)
     round_trip_cost = 2 * (fee_bps + slippage_bps) / 10_000
     trades = y_true[enter_mask].astype(float) - round_trip_cost
 

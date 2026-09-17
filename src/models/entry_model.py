@@ -20,11 +20,21 @@ chain_family/network/dex_venue/dex_protocol are real signal LightGBM could
 use natively as categoricals, but adding them means an encoding decision
 this first pass doesn't need to make yet -- tracked as a follow-up once
 this numeric-only baseline is validated, not an oversight.
+
+2026-09-17 (see docs/decisions.md, gold_features.py's RETURN_WINSORIZE_CAP):
+the raw y_entry a real Gold run produced included 779 rows in the
+hundreds-of-thousands-to-16.7-billion range -- artifacts of near-zero-
+priced tokens, not real winners a model should try to learn from.
+`prepare_features` winsorizes the target before it ever reaches
+`train_entry_model` so those 779 rows don't dominate training the way
+they dominated this session's first (unwinsorized) walk-forward run.
 """
 from __future__ import annotations
 
 import pandas as pd
 from lightgbm import LGBMRegressor
+
+from features.gold_features import winsorize_return
 
 FEATURE_COLUMNS = [
     "trailing_volume_usd",
@@ -48,7 +58,7 @@ def prepare_features(candidates: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]
     leaving it as NaN is the correct choice here, not a gap to fill in.
     """
     X = candidates[FEATURE_COLUMNS].copy()
-    y = candidates[TARGET_COLUMN].copy()
+    y = winsorize_return(candidates[TARGET_COLUMN].copy())
     return X, y
 
 

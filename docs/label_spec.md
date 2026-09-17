@@ -137,6 +137,22 @@ position history is the ground truth this substitutes for until it exists.
   `T + HOLD_MINUTES` (illiquid exit — can't actually sell at the "price")?
   Likely: model exit price using actual executable swap size, not
   last-trade price. (carried over from v1)
-- Outlier handling for extreme (>100x) winners — winsorize `y` for training
-  stability, keep the raw value for backtest P&L simulation. (carried over
-  from v1)
+- ~~Outlier handling for extreme (>100x) winners — winsorize `y` for
+  training stability, keep the raw value for backtest P&L simulation.
+  (carried over from v1)~~ **Resolved, 2026-09-17, see decisions.md:**
+  "keep the raw value for backtest P&L simulation" didn't survive contact
+  with real data. A real Gold run had 779 rows (0.061%) with `y_entry` in
+  the hundreds-of-thousands-to-16.7-billion range — tokens priced at 1e-8
+  to 1e-15 USD (plausible real data: huge supply, near-zero market cap),
+  where a tiny absolute price move produces an astronomical percentage
+  "return" no real trade could capture without knowing actual pool depth
+  (the same liquidity-data gap tracked in gold_spec.md/game_plan.md's
+  Phase 1). `gold_features.py::winsorize_return` now clips to
+  `RETURN_WINSORIZE_CAP` (100.0, i.e. this section's own ">100x" framing)
+  for BOTH training (`src/models/entry_model.py`) and backtest
+  (`src/backtest/walk_forward.py`) — an unexecutable 18-billion-x number
+  is exactly as misleading in a backtest P&L sum as it is during
+  training. Gold's own stored values stay raw/unclipped; only consumers
+  clip. Still a placeholder cap, not a measured one — revisit once real
+  liquidity-depth data exists to separate genuine big winners from
+  unexecutable thin-pool noise.

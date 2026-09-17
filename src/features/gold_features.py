@@ -63,6 +63,48 @@ RUG_CLAMP_RETURN = -1.0  # interim heuristic label for a likely-rugged/dead
     # token (see module docstring) -- full realized loss, since we can't
     # observe the actual liquidity-pull price without pool-state data.
 
+# 2026-09-17 (see docs/decisions.md): real Gold data surfaced 779 rows
+# (0.061% of entry_candidates) with y_entry in the hundreds-of-thousands
+# to 16.7 BILLION range -- not real winners, an artifact of tokens priced
+# at 1e-8 to 1e-15 USD (huge supply, near-zero market cap, all plausible
+# real data, not a bug) where a tiny absolute price move produces an
+# astronomical percentage "return." No real trade could capture that
+# without knowing actual pool depth -- the same liquidity-data gap already
+# tracked in gold_spec.md's feature-set section and game_plan.md's Phase
+# 1. label_spec.md's original plan ("winsorize y for training stability,
+# keep the raw value for backtest P&L simulation") assumed "raw" stayed
+# meaningful for backtesting -- real data disproved that: an 18-billion-x
+# "return" is exactly as uncapturable in a backtest P&L simulation as it
+# is misleading during training, so this cap applies to BOTH, not just
+# training. Deliberately a CLIP, not a drop -- see game_plan.md §2's
+# survivorship-bias warning, which applies just as much to silently
+# dropping extreme winners as it does to silently dropping rugs. Lives
+# here, next to RUG_CLAMP_RETURN, rather than in src/backtest/ or
+# src/models/, so both depend on one shared definition of "how this label
+# behaves at the extremes" instead of a sideways dependency between them.
+# 100.0 (+/-10,000%) matches label_spec.md's own "extreme (>100x)
+# winners" framing -- a placeholder, not a measured number; tune once
+# real liquidity-depth data exists to distinguish genuine big winners from
+# unexecutable thin-pool noise. Gold's OWN stored y_entry/y_exit values
+# are never clipped -- this is applied by callers (src/models/,
+# src/backtest/) at consumption time, not written back to Gold.
+RETURN_WINSORIZE_CAP = 100.0
+
+
+def winsorize_return(y: Any) -> Any:
+    """Clips a return (or a pandas Series/numpy array of returns) to
+    [-RETURN_WINSORIZE_CAP, RETURN_WINSORIZE_CAP]. See
+    RETURN_WINSORIZE_CAP's comment for why this exists and why it's a
+    clip, not a drop. Works on a scalar or anything with `.clip()`
+    (pandas Series, numpy array) via duck typing -- this module has no
+    pandas/numpy dependency of its own (see module docstring), so it
+    doesn't import either just to support this."""
+    lo, hi = -RETURN_WINSORIZE_CAP, RETURN_WINSORIZE_CAP
+    if hasattr(y, "clip"):
+        return y.clip(lo, hi)
+    return max(lo, min(hi, y))
+
+
 TokenTrades = list[dict[str, Any]]  # must be sorted ascending by trade_time
 
 
