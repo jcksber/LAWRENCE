@@ -125,6 +125,12 @@ gold_df = (
 
 # COMMAND ----------
 
+# 2026-09-17: the lawrence.gold SCHEMA itself (not just the table) had
+# never been created -- bronze/silver's schemas exist from some earlier
+# manual setup, gold's never did since no run had gotten this far before.
+# Idempotent, so this is a no-op on every later run.
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {GOLD_TABLE.rsplit('.', 1)[0]}")
+
 (
     gold_df.write.format("delta")
     .mode("overwrite")

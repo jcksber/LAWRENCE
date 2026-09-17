@@ -548,3 +548,17 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   Bronze/Silver's genuinely driver-side chunked work. Could not test the
   actual Spark-side applyInPandas execution from this sandbox (no
   Databricks access here) -- needs a real re-run to confirm.
+
+- **applyInPandas ran fast -- next error was just a missing schema
+  (2026-09-17).** Jack's re-run confirmed the applyInPandas rewrite: "went
+  extremely fast!!" No further collect()/toLocalIterator()/caching issue
+  came back, which is a real confirmation of that architecture (though the
+  write itself hasn't succeeded yet, so per-token feature correctness at
+  real scale is still unverified end-to-end). Hit `SCHEMA_NOT_FOUND: The
+  schema lawrence.gold cannot be found` on `saveAsTable` -- unlike
+  `lawrence.bronze`/`lawrence.silver`, the `gold` schema itself had never
+  been created (no run had ever gotten far enough to write there before
+  today). Fixed with an idempotent `CREATE SCHEMA IF NOT EXISTS
+  lawrence.gold` right before the write in both 02/03, so this is a
+  one-time no-op from here rather than something Jack has to remember to
+  set up by hand.
