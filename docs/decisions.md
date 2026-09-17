@@ -338,3 +338,11 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   type bugs, CANNOT_DETERMINE_TYPE x2, Row(**kwargs) ambiguity, driver
   hang, notebook-session timeout). Next: re-run Gold (02/03) against real
   historical volume for the first time.
+- **Removed notebooks/00b_bronze_backfill_test.py (2026-09-17).** Its sole
+  purpose was measuring real Bitquery credit cost against `dataset:
+  archive` before committing to a real backfill -- moot once that path
+  was confirmed Enterprise-only (403, see the 2026-09-15 entries above)
+  and replaced entirely by the Dune-based backfill
+  (00c_bronze_backfill_dune.py). Nothing imports or schedules it. Left
+  the historical references to it in this log and in 00c's own docstring
+  as-is -- they're describing what happened, not a live dependency.
