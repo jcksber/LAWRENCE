@@ -48,8 +48,11 @@ LOOKBACK_MINUTES = 60
 # Example -- catch up the Dune backfill window (Aug 14 - Sep 13):
 #   CATCHUP_SINCE = datetime(2026, 8, 14, tzinfo=timezone.utc)
 #   CATCHUP_UNTIL = datetime(2026, 9, 13, tzinfo=timezone.utc)
-CATCHUP_SINCE: datetime | None = None
-CATCHUP_UNTIL: datetime | None = None
+# NOTE: use "=" to set a real value, not ":" -- "CATCHUP_SINCE: datetime(...)"
+# is a type annotation with no assignment (valid syntax, does nothing) and
+# fails later with NameError, not at this line (confirmed live 2026-09-17).
+CATCHUP_SINCE = None
+CATCHUP_UNTIL = None
 CATCHUP_CHUNK_HOURS = 24
 
 # COMMAND ----------
