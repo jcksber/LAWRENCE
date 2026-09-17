@@ -411,3 +411,8 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   `[tool.pytest.ini_options] pythonpath = ["src"]` -- resolved relative to
   the ini file's own location (rootdir), so it works the same from any cwd,
   matching how notebooks already treat `src/` as the shared import root.
+
+- **Confirmed (2026-09-17):** all 16 tests pass locally
+  (`pytest tests/test_gold_features.py`) after the pyproject.toml fix,
+  including the new rug-clamping cases. Rug-clamping fix + test-path fix
+  both verified end-to-end; clear to re-run 02/03 Gold notebooks.
