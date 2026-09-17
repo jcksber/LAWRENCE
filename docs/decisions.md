@@ -831,3 +831,33 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   dropping out because they're single-blip tokens is exactly the kind of
   gap the distinct-token-count check exists to surface and let Jack
   judge for himself, not something to "fix" away.
+
+- **exit_candidates Silver->Gold gap is much larger than entry_candidates'
+  and this is architecturally expected, not a bug -- verified against the
+  real code (2026-09-17).** notebook 03's first real run: 3,018,803 rows
+  written, but only 14,907 of 61,633 distinct Silver tokens (24%) made it
+  in, vs. entry_candidates' 61,617/61,633 (99.97%). Rather than guess,
+  wrote a standalone script importing `build_entry_row`/`build_exit_rows`/
+  `sample_assessment_times` directly from `gold_features.py` and ran both
+  against several synthetic trade-spacing scenarios. Confirmed the
+  mechanism: `build_entry_row` only needs ONE trade within
+  `PRICE_STALENESS` (30 min) at-or-before T, and T's sampling grid always
+  includes T=the token's very first trade's own timestamp -- so almost
+  any token with >=1 usable-price trade gets at least one entry row
+  (matches the 99.97% figure). `build_exit_rows` additionally needs a
+  valid synthetic entry price at T-h for at least one h in
+  `EXIT_SIMULATED_HOLDS` (15/30/60/120 min) -- which requires a SECOND
+  trade roughly 15-150 minutes before that same T. A single-trade token
+  (1 sampled T, 0 exit rows) or a 2-trade token with the trades <15 min
+  apart (0 exit rows) both confirmed this in the script; wider or denser
+  spacing produced exit rows, sometimes more than entry rows since one T
+  can yield up to 4 (one per hold duration). This matches notebook 03's
+  own pre-existing comment ("exit candidates need MORE trailing history
+  per token than entry candidates do") -- now confirmed against the real
+  functions instead of just asserted.
+  What ISN'T yet confirmed: whether the *real* Silver trade-count
+  distribution actually has enough single/sparse-trade tokens to justify
+  a 76% gap specifically (vs. some size that would suggest a second,
+  subtler issue). Suggested Jack run the real distribution query
+  (bucketed trade-count histogram across all 61,633 tokens) to check
+  before fully closing this out -- not yet run.
