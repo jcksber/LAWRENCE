@@ -760,3 +760,38 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   to see them), but a 0.026% gap with a known, benign, already-fixed root
   cause is not a red flag. notebook 03 (`exit_candidates`) not yet run/
   reported.
+
+- **The 16-token Silver->Gold gap, identified by Jack (2026-09-17).** Ran
+  the EXCEPT query suggested above; the 16 token_ids are:
+  `BWXrrYFhT7bMHmNBFoQFWdsSgA3yXoAnMhDK6Fn1eSEn`,
+  `0x88faea256f789f8dd50de54f9c807eef24f71b16`,
+  `0x162e1571b9511c1d66e58fa4880fb5e0cf46cb9b`,
+  `0x06e8f93f0d0bf96629557e0264880ffc2858396c`,
+  `0xd3f857208231b2d9cc54792e0aef1c69f3142fdc`,
+  `7FcFaHyvuycxXBX63yoJVuvfrev2CJz62kDV3o7zpump`,
+  `0xc2cc346600103733eccf18c2cdd438479e8f8d7d`,
+  `GBKXKLGrxb5R6hhKjdEPyUd6jtYcdfa4y9mQ6quRQwJ1`,
+  `0x412253e1f45463e1c120338563ffab44bbb1544f`,
+  `GnNKwkgnM3DqCEcbLR2QKnK4waPFoeZBSLF8E3Appump`,
+  `aMYwbHHWFJWCRQofBwTVyY9tjjEr29ZyGwaYCNfRY5g`,
+  `CKweVATbMaCUngCs2V8oBMfuw3fRZuEPJjzRGDGoTbDt`,
+  `2LQtGJgMybqWT1rQYaV1UQJffEMuhTH5etM5qdj2pump`,
+  `H5RYoPzWFJfb44QJp8sBhwozyUkXSZEfEDRgdLCepump`,
+  `6uQP5vMFZrkJ7rpM1XU5ugoAgA8NDWKyUccuoBnjGwD8`,
+  `0x0b64174f86612d9721662297cc26f64c1692d65d`.
+  9 EVM, 7 Solana -- and notably 4 of the 7 Solana addresses end in
+  "pump" (`...zpump`, `...Appump`, `...2pump`, `...epump`), the vanity
+  suffix pump.fun bonding-curve mints always carry. Pump.fun launches are
+  exactly the profile most likely to be fully degenerate in Silver: a
+  huge share never graduate off the bonding curve and die almost
+  immediately, which fits the zero/negative-`price_usd` dust-trade
+  hypothesis from the earlier `ZeroDivisionError` fix better than any
+  other explanation so far -- a token whose ENTIRE history is dust
+  produces zero valid assessment points, not just an occasional dropped
+  row. Not independently confirmed against real Silver rows yet (no
+  direct Databricks SQL access from this session); a query like
+  `SELECT token_id, COUNT(*), MAX(price_usd) FROM
+  lawrence.silver.token_trades WHERE token_id IN (...) GROUP BY
+  token_id` against these 16 would confirm it outright (max_price <= 0
+  for all of them = fully explained; anything with a positive max_price
+  would mean something else is going on and deserves a closer look).
