@@ -658,3 +658,39 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   cap once Jack re-runs. Verified the skip-vs-process branching logic
   with a standalone script (an oversized synthetic group returns the
   correctly-shaped empty result; a normal-size group is unaffected).
+
+- **Outlier-token theory confirmed: all top-10 tokens by trade count are
+  established projects/blue-chips, not memecoins evading the denylist by
+  accident (2026-09-17).** The diagnostic query added in the OOM fix above
+  came back non-flat -- all 10 tokens exceed `_MAX_TRADES_PER_TOKEN` by a
+  wide margin (182,807 to 659,071 trades each, vs. a typical memecoin's
+  much smaller count), confirming the outlier-token theory rather than a
+  general memory problem. Identified all 10 via BaseScan/Solscan:
+
+  | address | trades | identity |
+  |---|---|---|
+  | 0xcbb7...ed33bf | 659,071 | Coinbase Wrapped BTC (cbBTC) |
+  | 0xb200...082f41d01 | 442,903 | "Basecat" (low-confidence ID -- fetched page listed multiple similarly-named token variants) |
+  | 0x0b3e...4e7e1b | 385,108 | Virtual Protocol (VIRTUAL) |
+  | 0xdcf5...f5bfd0 | 363,989 | ViciCoin (VCNT), ~$18/token |
+  | 4k3D...QrkX6R (Solana) | 360,149 | Raydium (RAY) |
+  | 0x9401...fd98631 | 326,970 | Aerodrome (AERO) -- Base's largest DEX token, itself commonly a trading pair |
+  | 0x624e...cb98831 | 307,884 | SoSoValue (SOSO) -- page's own tx count (68,833) doesn't match our 307,884, worth a second look |
+  | 0x1111...980afc69 | 243,626 | Zora (ZORA) |
+  | 0x4137...997afbd2 | 208,982 | "EDYNE Technologies" (ETD) -- ANOMALY: contract is only ~27 days old yet already has this many trades; doesn't fit the established-blue-chip pattern of the other 9, worth manually checking for wash-trading/bot activity rather than assuming it's a legitimate denylist gap |
+  | 0xacfe...cc21bf | 182,807 | Venice Token (VVV), ~$23/token |
+
+  Net read: 8-9 of 10 are real, established DeFi/platform tokens (a
+  wrapped blue-chip, DEX governance tokens, AI-platform tokens) that
+  legitimately trade at volumes no early-stage memecoin would reach --
+  this is a quote-asset-denylist gap, not a data bug, consistent with the
+  original hypothesis. EDYNE (#9) is the one entry that doesn't fit that
+  story and deserves a separate look. The existing
+  `_MAX_TRADES_PER_TOKEN` skip-cap already keeps today's Gold run
+  unblocked regardless of which explanation is right, since it skips by
+  trade count, not by identity. Not yet decided: whether to expand
+  `SOLANA_QUOTE_DENYLIST`/`EVM_QUOTE_DENYLIST` in `silver_token_trades.py`
+  (prevents re-encountering these in future Silver runs, but doesn't
+  retroactively clean already-written Silver data without a re-run) vs.
+  leaving the Gold-layer skip-cap as the sole, lower-cost mitigation --
+  flagged for Jack, not yet implemented.
