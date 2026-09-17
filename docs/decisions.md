@@ -346,3 +346,23 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   (00c_bronze_backfill_dune.py). Nothing imports or schedules it. Left
   the historical references to it in this log and in 00c's own docstring
   as-is -- they're describing what happened, not a live dependency.
+
+- **Liquidity/holder data confirmed essential, but deferred (2026-09-17).**
+  Discussed whether pool-liquidity-state and holder/dev-allocation data is
+  actually needed, or whether trade-log-only features are enough. Conclusion:
+  it's essential to the end goal, not a nice-to-have -- DEX trade data alone
+  can train a competent chart-based trader, but Larry (LAWRENCE's human
+  benchmark) uses liquidity/allocation signal at a surface level (volume is
+  already covered by Silver's trade log; % supply held by devs/founders and
+  real liquidity depth are not, and neither is real rug-pull detection).
+  This isn't a new finding -- `gold_spec.md`'s "Not included, on purpose"
+  section and `game_plan.md` §4's Gold feature list already named these same
+  two missing Bronze sources (pool-reserve-state snapshots, wallet/holder
+  data) -- but it had only ever appeared as background/footnote text, not as
+  a tracked phase item. Added an explicit callout to `game_plan.md` Phase 1
+  so it survives independent of this conversation. Decision: still don't
+  block on it right now -- building that ingestion is real new engineering
+  (a new on-chain data source, not a config change) -- proceed with the
+  interim trade-log-only rug-clamp heuristic (see next entry) and revisit
+  real liquidity/holder ingestion as a real, scheduled piece of work rather
+  than an aspiration.

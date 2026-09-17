@@ -105,6 +105,19 @@ Pick the target venues (start with Raydium + pump.fun-style launches, establishe
 **Phase 1 — Data ingestion (Bronze), 2–3 weeks**
 Stand up Solana DEX ingestion (Bitquery and/or direct RPC/Geyser) as a new Bronze source alongside your existing BTC/ETH pipeline pattern. Stand up a social-data Bronze source via LunarCrush or Santiment. Get both landing reliably on a schedule before touching modeling.
 
+- **Not yet started, but confirmed essential (2026-09-17):** pool-liquidity-state
+  (reserve/depth over time) and token holder/dev-allocation snapshot ingestion.
+  DEX trade data alone (what's landing today) can train LAWRENCE to be a
+  competent chart-based day trader, but Larry -- the trader LAWRENCE is
+  modeled on -- makes surface-level use of liquidity/allocation signal
+  (volume is already covered by the trade log; % supply held by
+  devs/founders and real liquidity depth are not). Without this data,
+  LAWRENCE caps out below that benchmark and can't do real rug-clamping
+  (see `gold_spec.md`'s KNOWN GAP) or the holder-concentration/deployer-
+  wallet-history features already listed above. Deliberately deferred
+  behind an interim trade-log-only rug heuristic for now -- tracked here so
+  it isn't lost, not scheduled yet.
+
 **Phase 2 — Silver/Gold + labeling, 2–3 weeks**
 Join on-chain and social data by token + time, build the Gold feature table, and implement the label definition from §3.3 with strict point-in-time correctness. This is the highest-leverage phase for your career pivot story — "built a leak-free, point-in-time feature store for a fast-moving adversarial market" is a strong data engineering narrative on its own, independent of trading outcomes.
 
