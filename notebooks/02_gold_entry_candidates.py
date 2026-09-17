@@ -94,23 +94,45 @@ _ENTRY_SCHEMA_COLUMNS = [f.name for f in _ENTRY_SCHEMA]
 import pandas as pd
 from pyspark.sql import functions as F
 
+# Only the columns gold_features.py actually reads (its price_at/
+# trailing_activity_features/build_entry_row/build_exit_rows) -- Silver's
+# _SILVER_SCHEMA (notebooks/01) carries 13 columns total; tx_fee_usd,
+# chain_native_fee, tx_hash, and quote_token_id are dead weight here.
+# tx_hash alone is a long string on every one of 10M+ rows, so trimming
+# this before the groupBy shuffle cuts real memory/network cost for every
+# token, not just the outliers identified in docs/decisions.md.
+_GOLD_COLUMNS = [
+    "token_id",
+    "chain_family",
+    "network",
+    "dex_venue",
+    "dex_protocol",
+    "trade_time",
+    "side",
+    "price_usd",
+    "amount_usd",
+]
+
 
 # 2026-09-17 (see docs/decisions.md): a UDF_PYSPARK_ERROR.OOM crashed the
 # Python worker running _process_token_group. gold_features.py needs a
 # token's FULL trade history in memory to sample point-in-time-correct
 # assessment points, so a token with a pathologically large trade count
 # can't be chunked the way everything else in this codebase is -- one
-# executor has to hold it all at once regardless. The quote-asset denylist
-# in silver_token_trades.py only excludes 5 known addresses (WSOL/USDC/USDT
-# on Solana, USDC/WETH on Base); any OTHER heavily-traded, non-memecoin
-# asset that isn't on that list would aggregate far more trades than a
-# typical token here. This cap skips (not truncates -- truncating would
-# silently break point-in-time correctness for early assessment points)
-# any token whose history is implausibly large for what this dataset is
-# actually meant to hold. Tune once the diagnostic print below shows the
-# real trade-count distribution -- 50,000 is a placeholder, not a
-# measured number.
-_MAX_TRADES_PER_TOKEN = 50_000
+# executor has to hold it all at once regardless. The diagnostic query
+# below identified the real top-10 by trade count (182,807-659,071
+# trades): cbBTC, Virtual Protocol, Raydium, Aerodrome, Zora, and other
+# legitimate, established assets -- NOT a data bug, and NOT tokens to
+# exclude. Jack: the bot needs to handle both memecoins and established/
+# blue-chip assets, so this cap is a crash-guard against a genuinely
+# pathological trade count (e.g. wash-trading/bot activity -- see the
+# EDYNE anomaly flagged in docs/decisions.md), not a filter on which
+# tokens are "worth" training on. Set comfortably above every real token
+# seen so far; the select() below (trimming to only the columns
+# gold_features.py actually reads, before the groupBy shuffle) is the
+# real fix for per-group memory pressure, so this should rarely if ever
+# trigger.
+_MAX_TRADES_PER_TOKEN = 2_000_000
 
 
 def _process_token_group(pdf: pd.DataFrame) -> pd.DataFrame:
@@ -128,10 +150,11 @@ def _process_token_group(pdf: pd.DataFrame) -> pd.DataFrame:
     if len(trades) > _MAX_TRADES_PER_TOKEN:
         # print() here goes to executor logs, not this notebook's output --
         # not visible to Jack -- which is exactly why the diagnostic query
-        # below runs on the driver instead of relying on this to surface
-        # anything. Skipping (not crashing) keeps the rest of the job
-        # running; losing one outlier token is a negligible loss against
-        # thousands of tokens' worth of training data.
+        # below runs on the driver, and why the distinct-token-count check
+        # after the write exists: this is a last-resort circuit breaker for
+        # a pathological trade count, not a way to silently exclude real
+        # assets -- any token this actually skips needs to surface, not
+        # vanish quietly.
         return pd.DataFrame(columns=_ENTRY_SCHEMA_COLUMNS)
     out_rows = []
     for t in sample_assessment_times(trades):
@@ -162,8 +185,14 @@ for _r in _top_tokens:
     _flag = " <- EXCEEDS _MAX_TRADES_PER_TOKEN, will be skipped" if _r["count"] > _MAX_TRADES_PER_TOKEN else ""
     print(f"  {_r['token_id']}: {_r['count']:,} trades{_flag}")
 
+# 2026-09-17 (see docs/decisions.md): real distinct-token count before the
+# write, so the post-write comparison below can actually prove nothing
+# vanished silently -- not just "the job didn't crash."
+_silver_token_count = spark.table(SILVER_TABLE).select("token_id").distinct().count()
+
 gold_df = (
     spark.table(SILVER_TABLE)
+    .select(*_GOLD_COLUMNS)
     .groupBy("token_id")
     .applyInPandas(_process_token_group, schema=_ENTRY_SCHEMA)
 )
@@ -191,3 +220,11 @@ print(f"Wrote {_written} rows to {GOLD_TABLE} (full overwrite -- this "
 # AND a real trade near T + HOLD_MINUTES, which a just-started ingestion
 # history mostly won't have yet. Re-run this after Bronze/Silver have
 # accumulated more history.
+print(
+    f"Distinct tokens: {_silver_token_count} in Silver, "
+    f"{spark.table(GOLD_TABLE).select('token_id').distinct().count()} made it into "
+    f"{GOLD_TABLE}. A gap here is real and should be explained (e.g. a token skipped "
+    f"by _MAX_TRADES_PER_TOKEN, or one with no assessment point that had both a usable "
+    f"price/feature anchor and enough trailing history) -- never treat it as fine by "
+    f"default."
+)

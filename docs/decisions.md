@@ -694,3 +694,41 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   retroactively clean already-written Silver data without a re-run) vs.
   leaving the Gold-layer skip-cap as the sole, lower-cost mitigation --
   flagged for Jack, not yet implemented.
+
+- **Correction from Jack: don't denylist non-memecoin tokens -- the bot
+  needs to trade both memecoins and established/blue-chip assets
+  (2026-09-17).** After the outlier-token identification above, my
+  framing treated "expand the quote-asset denylist" as one candidate
+  fix. Jack corrected this: cbBTC/Virtual Protocol/Raydium/Aerodrome/Zora/
+  etc. are legitimate assets Larry would plausibly trade, not junk to
+  filter out -- excluding them from Gold would just mean the model never
+  learns to handle that regime at all. Retracting the denylist-expansion
+  option; it was never really the right tool here anyway, since Silver's
+  quote denylist is about which side of a swap is the CURRENCY (e.g.
+  WETH/USDC), not about which tokens are worth training on.
+  Replaced the `_MAX_TRADES_PER_TOKEN` skip-cap's role accordingly in both
+  02/03: it's now an explicit last-resort circuit breaker (raised from the
+  50,000 placeholder to 2,000,000 -- comfortably above the real observed
+  max of 659,071) for a genuinely pathological trade count, not a
+  mechanism for excluding real assets; the skip-branch comment and the
+  constant's own comment were rewritten to say so plainly, since the old
+  "losing one token is a negligible loss" framing was exactly the
+  reasoning Jack is pushing back on. Also made two changes that
+  address the actual OOM without dropping anything: (1) both notebooks
+  now `.select()` only the 9 columns `gold_features.py` reads before the
+  groupBy shuffle -- Silver's `_SILVER_SCHEMA` carries 13, and the 4
+  unused ones (notably `tx_hash`, a long string on every one of 10M+
+  rows) were dead weight in every group's per-executor memory, not just
+  the outliers'; (2) added a real distinct-token-count check (Silver vs.
+  written Gold) printed after every run, so if `_MAX_TRADES_PER_TOKEN`
+  (or any other future skip condition) ever actually triggers, it shows
+  up as a number Jack sees, not a silent gap. EDYNE (the one anomaly that
+  didn't fit the established-blue-chip pattern -- 27 days old, 208,982
+  trades) is still worth a manual look, but is no longer being treated as
+  a denylist candidate either; if it turns out to be wash-trading/bot
+  activity, that's a Silver-layer data-quality question, not a Gold-layer
+  exclusion decision, and hasn't been investigated further yet.
+  Verified the notebook edits parse (`ast.parse`) and diffed cleanly
+  against both files; the actual Spark run is still pending in Jack's own
+  Databricks workspace, as with every notebook change so far this
+  session.
