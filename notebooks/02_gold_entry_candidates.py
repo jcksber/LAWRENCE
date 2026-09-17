@@ -17,25 +17,34 @@
 # MAGIC Silver, group by token, sample assessment points, call into that
 # MAGIC module, write the result.
 # MAGIC
-# MAGIC **2026-09-17: streamed instead of collect()'d.** With real Dune
-# MAGIC backfill volume in Silver (~10.75M rows), `silver_df.collect()` --
-# MAGIC pulling every row into one Python list on the driver before doing
-# MAGIC anything with it -- is the same driver-memory hazard that hung the
-# MAGIC Silver catch-up notebook before it was chunked (see docs/decisions.md).
-# MAGIC This notebook was written when Gold's own docs expected "few or zero
-# MAGIC rows" (no real backfill existed yet), so it was never exercised at
-# MAGIC this scale. Fixed by using `toLocalIterator()` (streams one partition
-# MAGIC at a time instead of materializing the whole result) plus a
-# MAGIC single streaming pass that relies on the existing `orderBy("token_id",
-# MAGIC "trade_time")` -- a token's rows are contiguous in that order, so each
-# MAGIC token's full trade history can be built and processed as soon as the
-# MAGIC next token_id is seen, without ever holding more than one token's
-# MAGIC trades (plus the much smaller accumulating Gold output) in memory.
+# MAGIC **2026-09-17: three attempts at real-scale volume, see docs/decisions.md.**
+# MAGIC Against the real ~10.75M-row Dune backfill (this notebook was written
+# MAGIC when Gold's own docs expected "few or zero rows" and was never
+# MAGIC exercised at scale until now):
+# MAGIC 1. The original `silver_df.collect()` -- everything into one Python
+# MAGIC    list on the driver -- hit the same driver-memory hang already seen
+# MAGIC    in Silver's own catch-up notebook.
+# MAGIC 2. Replaced with `toLocalIterator()` (stream partitions to the driver
+# MAGIC    one at a time) plus a manual per-token grouping loop. Ran into a
+# MAGIC    suspected recompute-per-partition problem, for which the standard
+# MAGIC    fix (`.cache()`) turned out to be unsupported on serverless compute
+# MAGIC    (`PERSIST TABLE is not supported on serverless`).
+# MAGIC 3. **Current approach:** stop routing 10M+ rows through the driver at
+# MAGIC    all. `silver_df.groupBy("token_id").applyInPandas(...)` pushes the
+# MAGIC    per-token feature/label computation onto the cluster as a real,
+# MAGIC    distributed Spark operation -- each executor handles a subset of
+# MAGIC    tokens in parallel, calling straight into the same
+# MAGIC    `gold_features.py` functions. No driver memory pressure, no
+# MAGIC    caching, no ordering assumptions to get right by hand -- Spark's
+# MAGIC    own groupBy shuffle guarantees each token's rows land together.
+# MAGIC    This also means the notebook's own Spark job progress (Tasks X/Y)
+# MAGIC    is now an honest signal of real completion, since the heavy work
+# MAGIC    happens as part of that job instead of invisibly afterward on the
+# MAGIC    driver.
 
 # COMMAND ----------
 
 import sys
-import time
 
 sys.path.append("../src")
 from features.gold_features import build_entry_row, sample_assessment_times  # noqa: E402
@@ -44,78 +53,6 @@ from features.gold_features import build_entry_row, sample_assessment_times  # n
 
 SILVER_TABLE = "lawrence.silver.token_trades"
 GOLD_TABLE = "lawrence.gold.entry_candidates"
-
-# COMMAND ----------
-
-silver_df = spark.table(SILVER_TABLE).orderBy("token_id", "trade_time").cache()
-# 2026-09-17 fix (see docs/decisions.md): toLocalIterator() without a cache
-# can force Spark to recompute the ENTIRE orderBy shuffle once per partition
-# retrieved instead of once total -- for ~25 partitions that's ~25x the
-# work, and matches exactly what a re-run showed (the underlying Spark
-# statement itself hadn't finished after 18+ minutes, vs. 36s when this was
-# a plain .collect()). .count() forces the cache to materialize eagerly
-# (Spark caching is lazy otherwise) so the sort runs exactly once before any
-# partition is streamed out.
-_silver_row_count = silver_df.count()
-
-gold_rows: list[dict] = []
-total_silver_rows = 0
-distinct_tokens = 0
-current_token_id = None
-current_trades: list[dict] = []
-
-
-def _process_token(token_id, trades):
-    if token_id is None or not trades:
-        return
-    for t in sample_assessment_times(trades):
-        row = build_entry_row(token_id, t, trades)
-        if row is not None:
-            gold_rows.append(row)
-
-
-# Single streaming pass over the sorted Silver rows -- see the note above on
-# why this replaces a full .collect(). toLocalIterator() pulls partitions to
-# the driver one at a time rather than materializing the entire 10M+ row
-# result at once.
-# 2026-09-17: progress logging (see docs/decisions.md) -- the earlier
-# opaque-hang incidents (both the pre-fix .collect() and the pre-cache
-# toLocalIterator() recompute) were hard to tell apart from "still working,
-# just slow" without any signal between start and the final print. This
-# gives a running count so a stalled run is visible immediately instead of
-# discovered 18+ minutes in.
-_PROGRESS_EVERY = 500_000
-_progress_start = time.time()
-for row in silver_df.toLocalIterator():
-    r = row.asDict()
-    total_silver_rows += 1
-    if r["token_id"] != current_token_id:
-        _process_token(current_token_id, current_trades)
-        current_token_id = r["token_id"]
-        current_trades = []
-        distinct_tokens += 1
-    current_trades.append(r)
-    if total_silver_rows % _PROGRESS_EVERY == 0:
-        _elapsed = time.time() - _progress_start
-        print(
-            f"... {total_silver_rows:,} rows scanned, {distinct_tokens:,} tokens, "
-            f"{len(gold_rows):,} gold rows so far ({_elapsed:.0f}s elapsed)"
-        )
-_process_token(current_token_id, current_trades)  # flush the last token
-
-if total_silver_rows != _silver_row_count:
-    print(
-        f"WARNING: scanned {total_silver_rows:,} rows via toLocalIterator() but "
-        f"the cached count was {_silver_row_count:,} -- investigate before "
-        "trusting this run's output."
-    )
-print(f"Silver rows scanned: {total_silver_rows} across {distinct_tokens} distinct tokens")
-print(f"Entry candidate rows produced: {len(gold_rows)}")
-# A low/zero count against a freshly-started Bronze/Silver history is
-# expected, not a bug: build_entry_row needs both a trailing feature window
-# AND a real trade near T + HOLD_MINUTES, which a just-started ingestion
-# history mostly won't have yet. Re-run this after Bronze/Silver have
-# accumulated more history.
 
 # COMMAND ----------
 
@@ -131,9 +68,7 @@ from pyspark.sql.types import (
 # Explicit schema, same rationale as Bronze/Silver's _BRONZE_SCHEMA/
 # _SILVER_SCHEMA (see docs/decisions.md): avoids CANNOT_DETERMINE_TYPE if a
 # nullable column (e.g. trailing_price_change_pct, network) happens to be
-# all-None in a given run, and passing plain dicts (not Row(**r)) avoids any
-# ambiguity between Row's internal alphabetical field order and this schema's
-# authored order.
+# all-None, and doubles as applyInPandas's required return schema below.
 _ENTRY_SCHEMA = StructType([
     StructField("token_id", StringType()),
     StructField("chain_family", StringType()),
@@ -152,17 +87,56 @@ _ENTRY_SCHEMA = StructType([
     StructField("trailing_buy_sell_ratio", DoubleType()),
     StructField("trailing_price_change_pct", DoubleType()),
 ])
+_ENTRY_SCHEMA_COLUMNS = [f.name for f in _ENTRY_SCHEMA]
 
-if gold_rows:
-    df = spark.createDataFrame(gold_rows, schema=_ENTRY_SCHEMA)
-    (
-        df.write.format("delta")
-        .mode("overwrite")
-        .option("overwriteSchema", "true")
-        .saveAsTable(GOLD_TABLE)
-    )
-    print(f"Wrote {len(gold_rows)} rows to {GOLD_TABLE} (full overwrite -- this "
-          "is a batch regenerate, not an incremental append; re-running from "
-          "scratch is the intended usage, unlike Bronze/Silver's MERGE)")
-else:
-    print("No entry candidate rows produced.")
+# COMMAND ----------
+
+import pandas as pd
+
+
+def _process_token_group(pdf: pd.DataFrame) -> pd.DataFrame:
+    """Runs on an executor, once per distinct token_id (Spark's groupBy
+    shuffle guarantees every row for a token lands in the same call).
+    applyInPandas does NOT guarantee row order within a group, so sort
+    locally first -- gold_features.py's whole contract depends on `trades`
+    being sorted ascending by trade_time."""
+    pdf = pdf.sort_values("trade_time")
+    trades = pdf.to_dict("records")
+    if not trades:
+        return pd.DataFrame(columns=_ENTRY_SCHEMA_COLUMNS)
+
+    token_id = trades[0]["token_id"]
+    out_rows = []
+    for t in sample_assessment_times(trades):
+        row = build_entry_row(token_id, t, trades)
+        if row is not None:
+            out_rows.append(row)
+
+    if not out_rows:
+        return pd.DataFrame(columns=_ENTRY_SCHEMA_COLUMNS)
+    return pd.DataFrame(out_rows)[_ENTRY_SCHEMA_COLUMNS]
+
+
+gold_df = (
+    spark.table(SILVER_TABLE)
+    .groupBy("token_id")
+    .applyInPandas(_process_token_group, schema=_ENTRY_SCHEMA)
+)
+
+# COMMAND ----------
+
+(
+    gold_df.write.format("delta")
+    .mode("overwrite")
+    .option("overwriteSchema", "true")
+    .saveAsTable(GOLD_TABLE)
+)
+_written = spark.table(GOLD_TABLE).count()
+print(f"Wrote {_written} rows to {GOLD_TABLE} (full overwrite -- this "
+      "is a batch regenerate, not an incremental append; re-running from "
+      "scratch is the intended usage, unlike Bronze/Silver's MERGE)")
+# A low/zero count against a freshly-started Bronze/Silver history is
+# expected, not a bug: build_entry_row needs both a trailing feature window
+# AND a real trade near T + HOLD_MINUTES, which a just-started ingestion
+# history mostly won't have yet. Re-run this after Bronze/Silver have
+# accumulated more history.

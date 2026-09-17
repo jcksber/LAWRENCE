@@ -499,3 +499,52 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   a silent partial-scan. Applied identically to both 02 and 03. Could not
   verify the caching fix's actual effect from this sandbox (no
   Spark/Databricks access here) -- needs a real re-run to confirm.
+
+- **Progress logging made a standard practice (2026-09-17).** After three
+  separate "is it stuck or just slow" incidents in this one session, Jack
+  asked to make progress logging standard rather than something added
+  reactively each time. Wrote it up in the new `docs/conventions.md`
+  (chunked-job vs. tight-loop patterns, both already in use across the
+  codebase) so it's a documented expectation for new notebooks going
+  forward, not just a fix applied to the two files that happened to hit
+  the problem.
+
+- **.cache() unsupported on serverless -- switched Gold 02/03 to a
+  distributed groupBy/applyInPandas job instead of streaming through the
+  driver at all (2026-09-17).** The `toLocalIterator()` + `.cache()` fix
+  from the previous entry errored immediately: `[NOT_SUPPORTED_WITH_SERVERLESS]
+  PERSIST TABLE is not supported on serverless compute`. This confirms
+  Jack's cluster is Databricks serverless (Spark Connect client) --
+  important context for any future fix that assumes classic-cluster Spark
+  behavior (RDD-level ops and caching in particular are restricted there).
+  Given this was the THIRD distinct failure mode from trying to route
+  10M+ Silver rows through a single Python process on the driver
+  (`.collect()` memory hang, then a suspected toLocalIterator()
+  recompute-per-partition problem, now a blocked caching API), decided to
+  stop patching that approach and instead push the per-token computation
+  onto the cluster as a real distributed operation:
+  `silver_df.groupBy("token_id").applyInPandas(fn, schema=...)`. Each
+  executor now processes a subset of tokens in parallel, calling straight
+  into the same `gold_features.py` functions -- no driver memory
+  pressure, no caching, and Spark's own groupBy shuffle guarantees a
+  token's rows land together (no hand-rolled streaming/ordering logic to
+  get right). applyInPandas groups have no guaranteed row order, so the
+  per-group function sorts locally first (cheap -- one token's rows, not
+  the whole table); verified this is correct and order-independent with a
+  standalone script (out-of-order input trades, checked the resulting
+  y_entry/is_rug_clamped match the same call via gold_features.py
+  directly) and that the empty-group edge case returns the right empty
+  schema. pandas/pyarrow were already project dependencies
+  (requirements.txt), no new dependency added.
+  This also resolves the "is it stuck" visibility problem more
+  fundamentally than the progress-print fix did: the heavy computation
+  now happens AS the Spark job, so its Tasks X/Y progress in the
+  Databricks UI is an honest signal of real completion, instead of
+  misleadingly showing "done" while driver-side Python work continued
+  invisibly (what made the first two stalls hard to diagnose). Rewrote
+  `docs/conventions.md`'s progress-logging section to lead with "prefer a
+  real distributed Spark job when the computation allows it" ahead of the
+  driver-loop-plus-print-statements pattern, which still applies to
+  Bronze/Silver's genuinely driver-side chunked work. Could not test the
+  actual Spark-side applyInPandas execution from this sandbox (no
+  Databricks access here) -- needs a real re-run to confirm.
