@@ -16,11 +16,25 @@
 # MAGIC tested, runs in CI). This notebook is the Spark glue: read all of
 # MAGIC Silver, group by token, sample assessment points, call into that
 # MAGIC module, write the result.
+# MAGIC
+# MAGIC **2026-09-17: streamed instead of collect()'d.** With real Dune
+# MAGIC backfill volume in Silver (~10.75M rows), `silver_df.collect()` --
+# MAGIC pulling every row into one Python list on the driver before doing
+# MAGIC anything with it -- is the same driver-memory hazard that hung the
+# MAGIC Silver catch-up notebook before it was chunked (see docs/decisions.md).
+# MAGIC This notebook was written when Gold's own docs expected "few or zero
+# MAGIC rows" (no real backfill existed yet), so it was never exercised at
+# MAGIC this scale. Fixed by using `toLocalIterator()` (streams one partition
+# MAGIC at a time instead of materializing the whole result) plus a
+# MAGIC single streaming pass that relies on the existing `orderBy("token_id",
+# MAGIC "trade_time")` -- a token's rows are contiguous in that order, so each
+# MAGIC token's full trade history can be built and processed as soon as the
+# MAGIC next token_id is seen, without ever holding more than one token's
+# MAGIC trades (plus the much smaller accumulating Gold output) in memory.
 
 # COMMAND ----------
 
 import sys
-from collections import defaultdict
 
 sys.path.append("../src")
 from features.gold_features import build_entry_row, sample_assessment_times  # noqa: E402
@@ -30,24 +44,42 @@ from features.gold_features import build_entry_row, sample_assessment_times  # n
 SILVER_TABLE = "lawrence.silver.token_trades"
 GOLD_TABLE = "lawrence.gold.entry_candidates"
 
-silver_df = spark.table(SILVER_TABLE).orderBy("token_id", "trade_time")
-silver_rows = [row.asDict() for row in silver_df.collect()]
-
-by_token: dict[str, list[dict]] = defaultdict(list)
-for row in silver_rows:
-    by_token[row["token_id"]].append(row)
-
-print(f"Silver rows: {len(silver_rows)} across {len(by_token)} distinct tokens")
-
 # COMMAND ----------
 
-gold_rows = []
-for token_id, trades in by_token.items():
+silver_df = spark.table(SILVER_TABLE).orderBy("token_id", "trade_time")
+
+gold_rows: list[dict] = []
+total_silver_rows = 0
+distinct_tokens = 0
+current_token_id = None
+current_trades: list[dict] = []
+
+
+def _process_token(token_id, trades):
+    if token_id is None or not trades:
+        return
     for t in sample_assessment_times(trades):
         row = build_entry_row(token_id, t, trades)
         if row is not None:
             gold_rows.append(row)
 
+
+# Single streaming pass over the sorted Silver rows -- see the note above on
+# why this replaces a full .collect(). toLocalIterator() pulls partitions to
+# the driver one at a time rather than materializing the entire 10M+ row
+# result at once.
+for row in silver_df.toLocalIterator():
+    r = row.asDict()
+    total_silver_rows += 1
+    if r["token_id"] != current_token_id:
+        _process_token(current_token_id, current_trades)
+        current_token_id = r["token_id"]
+        current_trades = []
+        distinct_tokens += 1
+    current_trades.append(r)
+_process_token(current_token_id, current_trades)  # flush the last token
+
+print(f"Silver rows scanned: {total_silver_rows} across {distinct_tokens} distinct tokens")
 print(f"Entry candidate rows produced: {len(gold_rows)}")
 # A low/zero count against a freshly-started Bronze/Silver history is
 # expected, not a bug: build_entry_row needs both a trailing feature window
@@ -57,10 +89,42 @@ print(f"Entry candidate rows produced: {len(gold_rows)}")
 
 # COMMAND ----------
 
-from pyspark.sql import Row
+from pyspark.sql.types import (
+    BooleanType,
+    DoubleType,
+    IntegerType,
+    StringType,
+    StructField,
+    StructType,
+)
+
+# Explicit schema, same rationale as Bronze/Silver's _BRONZE_SCHEMA/
+# _SILVER_SCHEMA (see docs/decisions.md): avoids CANNOT_DETERMINE_TYPE if a
+# nullable column (e.g. trailing_price_change_pct, network) happens to be
+# all-None in a given run, and passing plain dicts (not Row(**r)) avoids any
+# ambiguity between Row's internal alphabetical field order and this schema's
+# authored order.
+_ENTRY_SCHEMA = StructType([
+    StructField("token_id", StringType()),
+    StructField("chain_family", StringType()),
+    StructField("network", StringType()),
+    StructField("dex_venue", StringType()),
+    StructField("dex_protocol", StringType()),
+    StructField("assessment_time", StringType()),
+    StructField("price_at_t", DoubleType()),
+    StructField("hold_minutes", IntegerType()),
+    StructField("y_entry", DoubleType()),
+    StructField("is_rug_clamped", BooleanType()),
+    StructField("trailing_volume_usd", DoubleType()),
+    StructField("trailing_trade_count", IntegerType()),
+    StructField("trailing_buy_count", IntegerType()),
+    StructField("trailing_sell_count", IntegerType()),
+    StructField("trailing_buy_sell_ratio", DoubleType()),
+    StructField("trailing_price_change_pct", DoubleType()),
+])
 
 if gold_rows:
-    df = spark.createDataFrame([Row(**r) for r in gold_rows])
+    df = spark.createDataFrame(gold_rows, schema=_ENTRY_SCHEMA)
     (
         df.write.format("delta")
         .mode("overwrite")

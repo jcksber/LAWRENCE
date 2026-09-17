@@ -416,3 +416,33 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   (`pytest tests/test_gold_features.py`) after the pyproject.toml fix,
   including the new rug-clamping cases. Rug-clamping fix + test-path fix
   both verified end-to-end; clear to re-run 02/03 Gold notebooks.
+
+- **Gold notebooks 02/03 hit the same driver-collect() hazard as Silver,
+  caught mid-run (2026-09-17).** Jack's first real run of
+  `02_gold_entry_candidates.py` against real backfill volume (~10.75M
+  Silver rows) had been running 45+ minutes with the orderBy shuffle's
+  Spark tasks already fully complete (25/25) but no output printed --
+  the classic sign the driver is stuck materializing a huge `.collect()`
+  result, the same failure mode already hit and fixed in Silver's own
+  catch-up notebook. Root cause: `02`/`03` were written when
+  gold_spec.md's own docs expected "few or zero rows" (no real backfill
+  existed yet), so `silver_df.collect()` -- the whole table into one
+  Python list -- was never actually exercised at scale before now. Had
+  Jack interrupt the run rather than wait it out further.
+  Fixed both notebooks the same way: replaced `.collect()` with
+  `toLocalIterator()` (streams partitions to the driver one at a time
+  instead of materializing everything at once) plus a single streaming
+  pass that relies on the existing `orderBy("token_id", "trade_time")` --
+  a token's rows are contiguous in that order, so each token's full trade
+  history is built and processed as soon as the next token_id is seen,
+  never holding more than one token's raw trades (plus the much smaller
+  accumulating Gold output) in memory. Also added explicit schemas
+  (`_ENTRY_SCHEMA`/`_EXIT_SCHEMA`) and switched the final write to plain
+  dicts instead of `Row(**r)`, matching Bronze/Silver's existing
+  CANNOT_DETERMINE_TYPE / Row-ordering-ambiguity fix -- this notebook's
+  final createDataFrame call had neither before. Verified the streaming
+  group-by logic against the real `build_entry_row` with a standalone
+  script (two interleaved fake tokens, checked scan counts and per-token
+  labels); couldn't test the Spark-side `toLocalIterator()` mechanics
+  themselves in this sandbox (no Spark/Databricks access here) -- that
+  needs a real re-run to confirm the runtime actually resolves.
