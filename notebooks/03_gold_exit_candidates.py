@@ -21,6 +21,7 @@
 # COMMAND ----------
 
 import sys
+import time
 
 sys.path.append("../src")
 from features.gold_features import build_exit_rows, sample_assessment_times  # noqa: E402
@@ -32,7 +33,16 @@ GOLD_TABLE = "lawrence.gold.exit_candidates"
 
 # COMMAND ----------
 
-silver_df = spark.table(SILVER_TABLE).orderBy("token_id", "trade_time")
+silver_df = spark.table(SILVER_TABLE).orderBy("token_id", "trade_time").cache()
+# 2026-09-17 fix (see docs/decisions.md): toLocalIterator() without a cache
+# can force Spark to recompute the ENTIRE orderBy shuffle once per partition
+# retrieved instead of once total -- for ~25 partitions that's ~25x the
+# work, and matches exactly what a re-run showed (the underlying Spark
+# statement itself hadn't finished after 18+ minutes, vs. 36s when this was
+# a plain .collect()). .count() forces the cache to materialize eagerly
+# (Spark caching is lazy otherwise) so the sort runs exactly once before any
+# partition is streamed out.
+_silver_row_count = silver_df.count()
 
 gold_rows: list[dict] = []
 total_silver_rows = 0
@@ -52,6 +62,14 @@ def _process_token(token_id, trades):
 # replaces a full .collect(). toLocalIterator() pulls partitions to the
 # driver one at a time; a token's rows are contiguous thanks to the orderBy,
 # so each token can be fully processed as soon as the next token_id appears.
+# 2026-09-17: progress logging (see docs/decisions.md) -- the earlier
+# opaque-hang incidents (both the pre-fix .collect() and the pre-cache
+# toLocalIterator() recompute) were hard to tell apart from "still working,
+# just slow" without any signal between start and the final print. This
+# gives a running count so a stalled run is visible immediately instead of
+# discovered 18+ minutes in.
+_PROGRESS_EVERY = 500_000
+_progress_start = time.time()
 for row in silver_df.toLocalIterator():
     r = row.asDict()
     total_silver_rows += 1
@@ -61,8 +79,20 @@ for row in silver_df.toLocalIterator():
         current_trades = []
         distinct_tokens += 1
     current_trades.append(r)
+    if total_silver_rows % _PROGRESS_EVERY == 0:
+        _elapsed = time.time() - _progress_start
+        print(
+            f"... {total_silver_rows:,} rows scanned, {distinct_tokens:,} tokens, "
+            f"{len(gold_rows):,} gold rows so far ({_elapsed:.0f}s elapsed)"
+        )
 _process_token(current_token_id, current_trades)  # flush the last token
 
+if total_silver_rows != _silver_row_count:
+    print(
+        f"WARNING: scanned {total_silver_rows:,} rows via toLocalIterator() but "
+        f"the cached count was {_silver_row_count:,} -- investigate before "
+        "trusting this run's output."
+    )
 print(f"Silver rows scanned: {total_silver_rows} across {distinct_tokens} distinct tokens")
 print(f"Exit candidate rows produced: {len(gold_rows)}")
 # Same expected-low-count-on-fresh-history caveat as notebook 02, plus one

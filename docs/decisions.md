@@ -473,3 +473,29 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   function signature changed, so tests/test_gold_features.py needed no
   changes and should still be the thing to run to confirm this didn't
   change behavior.
+
+- **toLocalIterator() without caching likely recomputed the sort per
+  partition -- still slow after the O(log n) fix (2026-09-17).** After the
+  binary-search fix, Jack's next re-run was still going after 18 minutes,
+  but this time with a materially different signal: the Databricks
+  performance panel showed "Statement 0/1" (the underlying Spark query
+  itself hadn't finished), versus the earlier run where the identical
+  orderBy query had completed in 36s and only the driver-side Python work
+  was still running. Ruled out plain Python loop overhead as the
+  explanation first (benchmarked: iterating/asDict()-ing 10.76M rows takes
+  ~3s on its own, nowhere near 18 minutes). The likely cause: without a
+  `.cache()`, `toLocalIterator()` can force Spark to recompute the entire
+  upstream query (the full orderBy shuffle) once per partition retrieved,
+  instead of computing it once and streaming pieces of one materialized
+  result -- for ~25 partitions that's roughly 25x the work, and 25 x ~36s
+  lands right around 18+ minutes, a strong match. Fixed by caching the
+  sorted DataFrame and forcing eager materialization with `.count()`
+  (Spark caching is lazy otherwise) before the toLocalIterator() loop, so
+  the shuffle runs exactly once regardless of partition count. Also added:
+  progress logging every 500k rows (elapsed time, tokens seen, Gold rows
+  built so far) so a future stalled run is visible immediately instead of
+  discovered many minutes in with no signal at all, and a sanity check
+  comparing the streamed row count against the cached `.count()` to catch
+  a silent partial-scan. Applied identically to both 02 and 03. Could not
+  verify the caching fix's actual effect from this sandbox (no
+  Spark/Databricks access here) -- needs a real re-run to confirm.
