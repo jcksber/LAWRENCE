@@ -1,0 +1,11 @@
+[tool.pytest.ini_options]
+# tests/*.py import from `features.X` / `ingestion.X` (matching the
+# notebooks' own `sys.path.append("../src")` pattern) but there was no
+# conftest.py/ini file putting `src/` on sys.path for pytest itself, so
+# collection failed with ModuleNotFoundError regardless of cwd (2026-09-17,
+# found while verifying the rug-clamping fix -- see docs/decisions.md).
+# This resolves it the same way for every test file and every invocation
+# directory, since `pythonpath` entries are resolved relative to rootdir
+# (this file's own location), not cwd.
+pythonpath = ["src"]
+testpaths = ["tests"]

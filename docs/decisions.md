@@ -392,3 +392,22 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   the same cases the updated tests cover; Jack should still run the real
   test suite once he pulls this). Ready to re-run
   `02_gold_entry_candidates.py`/`03_gold_exit_candidates.py` after this.
+
+- **pytest never had `src/` on its import path -- likely never actually
+  collected in CI (2026-09-17).** Jack ran `pytest test_gold_features.py`
+  locally (the first real attempt to run this suite that surfaced in this
+  conversation) and hit `ModuleNotFoundError: No module named 'features'`.
+  Checked: no `conftest.py`, `pytest.ini`, `pyproject.toml`, or `setup.cfg`
+  has ever existed in this repo (confirmed via `git log`), and every test
+  file (`test_gold_features.py`, `test_silver_token_trades.py`,
+  `test_dune_client.py`) imports from `features.X`/`ingestion.X` the same
+  way the notebooks do -- except the notebooks explicitly
+  `sys.path.append("../src")` and the tests had no equivalent. Without an
+  ini file, pytest's default "prepend" import mode puts the test file's own
+  directory (`tests/`, since it has no `__init__.py`) on sys.path, not
+  `src/` -- regardless of cwd. This means `.github/workflows/ci.yml`'s own
+  `pytest -q` step was very likely failing at collection the entire time,
+  not just Jack's local run. Fixed with a new root `pyproject.toml` setting
+  `[tool.pytest.ini_options] pythonpath = ["src"]` -- resolved relative to
+  the ini file's own location (rootdir), so it works the same from any cwd,
+  matching how notebooks already treat `src/` as the shared import root.
