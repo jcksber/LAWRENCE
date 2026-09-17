@@ -795,3 +795,39 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   token_id` against these 16 would confirm it outright (max_price <= 0
   for all of them = fully explained; anything with a positive max_price
   would mean something else is going on and deserves a closer look).
+
+- **Correction: the 16-token gap is NOT 100% zero-price dust (2026-09-17).**
+  Jack ran the confirmation query. 14 of 16 do have `MAX(price_usd) = 0`
+  (pure dust, as hypothesized), but two don't:
+  `0x06e8f93f0d0bf96629557e0264880ffc2858396c` (2 trades,
+  max_price=0.0000021660948...) and
+  `CKweVATbMaCUngCs2V8oBMfuw3fRZuEPJjzRGDGoTbDt` (2 trades,
+  max_price=0.1525231508888889). "100% of the gap is dust trades" was
+  wrong -- retracting that as the full explanation.
+  The pattern that actually IS 100% consistent across all 16: every one
+  has a vanishingly thin trade history -- 1 trade (12 of them), 2 trades
+  (3 of them: the two above plus `6uQP5vMFZrkJ7rpM1XU5ugoAgA8NDWKyUccuoBn
+  jGwD8`), or 4 trades (`0x88faea256f789f8dd50de54f9c807eef24f71b16`).
+  For the 2-trade, nonzero-max-price cases, the likely mechanism (not yet
+  confirmed against the actual trade_time/price_usd rows -- would need
+  one more query, `SELECT token_id, trade_time, side, price_usd,
+  amount_usd FROM lawrence.silver.token_trades WHERE token_id IN (...)
+  ORDER BY token_id, trade_time`) is `sample_assessment_times`' own
+  contract: with only 2 trades, the T-grid runs from the FIRST trade's
+  timestamp to the LAST, stepping every 15 minutes -- if the earliest
+  trade is the dust one (price_usd == 0) and it's also the only trade
+  `price_at` can anchor to at T=start (the always-included first sample
+  point), the row drops at T=start regardless of the second trade's real
+  price, UNLESS a later 15-minute grid point happens to land within
+  `PRICE_STALENESS` (30 min) of that second trade -- which a sparse,
+  irregularly-timed 2-trade history frequently won't.
+  Net conclusion, unchanged from before despite the correction: this
+  isn't a bug and doesn't need a code change. A token with 1-4 total
+  trades in its entire Silver history has no real trailing-activity
+  signal to learn from either way -- there's nothing informative to
+  recover here by relaxing `price_at`/`trailing_activity_features`,
+  unlike the earlier blue-chip-token situation where real, tradeable
+  assets were at risk of being silently excluded. 16/61,633 (0.026%)
+  dropping out because they're single-blip tokens is exactly the kind of
+  gap the distinct-token-count check exists to surface and let Jack
+  judge for himself, not something to "fix" away.
