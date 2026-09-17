@@ -324,3 +324,17 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   break every downstream Silver read), but this hasn't been explicitly
   proven the way row counts were. Worth a real spot-check of raw Bronze
   values (not just counts) before trusting this fully.
+- **Dune backfill through Silver confirmed complete end-to-end
+  (2026-09-17).** Bronze: 60/60 chunks, full Aug 14 - Sep 13 window,
+  spot-checked clean. Silver: 19,024,520 Bronze rows scanned ->
+  10,756,956 Silver rows written (~56.5% conversion, consistent with
+  typical quote/non-quote trade patterns), verified against
+  lawrence.silver.token_trades directly (count + min/max trade_time
+  matched the run's own summary). CATCHUP_SINCE/CATCHUP_UNTIL reverted to
+  None; live cadence path confirmed still working correctly (0/0 result
+  on a paused live job, as expected). This closes out the whole Dune
+  backfill effort -- see the chain of entries above for the full bug
+  history (SELECT * cost incident, 402 resilience, raydium_v4 filter and
+  type bugs, CANNOT_DETERMINE_TYPE x2, Row(**kwargs) ambiguity, driver
+  hang, notebook-session timeout). Next: re-run Gold (02/03) against real
+  historical volume for the first time.
