@@ -86,6 +86,14 @@ def test_price_at_returns_none_with_no_trades_before_t():
     assert price_at(trades, T0) is None
 
 
+def test_price_at_returns_none_for_non_positive_price():
+    # 2026-09-17: a real Silver row had price_usd == 0.0 (a dust/degenerate
+    # swap artifact) and crashed build_entry_row with ZeroDivisionError --
+    # see docs/decisions.md. Treated the same as "no usable price."
+    assert price_at([_trade(0, "buy", 0.0, 100)], T0) is None
+    assert price_at([_trade(0, "buy", -0.5, 100)], T0) is None
+
+
 def test_trailing_activity_features_basic_math():
     trades = [
         _trade(0, "buy", 1.0, 100),
@@ -125,6 +133,23 @@ def test_build_entry_row_computes_y_entry_and_carries_metadata():
     assert row["dex_venue"] == "raydium_v4"
     assert row["price_at_t"] == 1.0
     assert row["y_entry"] == (1.5 - 1.0) / 1.0
+
+
+def test_build_entry_row_drops_when_price_at_t_is_zero():
+    # price_t == 0.0 must be treated like "no price at T" (dropped), not
+    # used as a division denominator.
+    trades = [_trade(0, "buy", 0.0, 100), _trade(30, "buy", 1.0, 50), _trade(60, "sell", 1.5, 80)]
+    assert build_entry_row("TOKEN123", T0, trades, hold_minutes=60) is None
+
+
+def test_build_entry_row_clamps_when_price_exit_is_zero():
+    # price_exit == 0.0 must go through the same rug-clamp path as "no
+    # exit-price trade found" -- not a literal (0 - price_t) / price_t.
+    trades = [_trade(0, "buy", 1.0, 100), _trade(60, "sell", 0.0, 80)]
+    row = build_entry_row("TOKEN123", T0, trades, hold_minutes=60)
+    assert row is not None
+    assert row["y_entry"] == RUG_CLAMP_RETURN
+    assert row["is_rug_clamped"] is True
 
 
 def test_build_entry_row_drops_when_no_price_anchor_at_t():

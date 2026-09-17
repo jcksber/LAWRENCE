@@ -598,3 +598,32 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   independently verified as correct (row counts, min/max), and this fix
   makes any downstream reader of trade_time correct regardless of which
   shape a given row happens to carry.
+
+- **ZeroDivisionError in build_entry_row: a real Silver row has
+  price_usd == 0.0 (2026-09-17).** applyInPandas got past the timestamp
+  fix and crashed on real data again:
+  `ZeroDivisionError: float division by zero` at
+  `y_entry = (price_exit - price_t) / price_t`. `price_t` was `0.0` --
+  `price_at` returned it as a legitimate value since `0.0 is not None`
+  passed the existing null check. Root cause: `price_usd` in Silver is
+  computed as `amount_usd / amount` in `silver_token_trades.py`, and a
+  dust/degenerate swap (nonzero token amount, `amount_usd == 0`) produces
+  a literal `0.0` price that Silver's own filter doesn't catch (it only
+  checks `amount_usd is None`, not `amount_usd == 0`). A $0 price isn't a
+  meaningful "this token is worth nothing" signal, it's a data artifact.
+  Fixed the same way as the timestamp-format issue -- at the read side,
+  not by rewriting already-verified Silver data: `price_at` now treats
+  any non-positive price the same as "no usable price" (returns None).
+  This reuses ALL of the existing, already-tested None-handling in
+  build_entry_row/build_exit_rows for free -- a zero price_t drops the
+  row (genuine gap at T), a zero price_exit goes through the interim
+  rug-clamp path instead of literally dividing by it -- no new branches
+  needed in either function. Verified with a standalone script (zero and
+  negative price both treated as unusable; a zero price_exit clamps
+  instead of crashing; build_exit_rows' existing `if not entry_price`
+  check already covered a zero synthetic entry price) and added
+  permanent regression tests. Could not run the real pytest suite from
+  either this sandbox or the device_bash shell (neither has pytest
+  installed -- device_bash is an isolated VM without Jack's own
+  Anaconda/PATH setup) -- Jack should run it in his own terminal to
+  confirm before trusting this fully.

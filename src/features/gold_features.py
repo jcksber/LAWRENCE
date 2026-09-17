@@ -119,14 +119,24 @@ def price_at(
 ) -> float | None:
     """Last real trade price at or before `t`, within `max_staleness` of it.
     Never looks forward past `t` -- point-in-time correctness. Returns None
-    (not a guess) when nothing recent enough exists."""
+    (not a guess) when nothing recent enough exists -- including when the
+    only candidate has a non-positive price_usd (2026-09-17, see
+    docs/decisions.md: a real Silver row hit price_usd == 0.0 -- a dust/
+    degenerate-swap data artifact, not a meaningful "worth $0" signal --
+    and (price_exit - 0.0) / 0.0 crashed build_entry_row with
+    ZeroDivisionError). Treating it as "no usable price" reuses the
+    existing, already-tested genuine-data-gap handling in build_entry_row/
+    build_exit_rows (drop the row) instead of adding a second code path."""
     idx = _count_at_or_before(trades, t) - 1
     if idx < 0:
         return None
     best = trades[idx]
     if t - _parse(best["trade_time"]) > max_staleness:
         return None
-    return float(best["price_usd"])
+    price = float(best["price_usd"])
+    if price <= 0:
+        return None
+    return price
 
 
 def trailing_activity_features(
