@@ -732,3 +732,31 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   against both files; the actual Spark run is still pending in Jack's own
   Databricks workspace, as with every notebook change so far this
   session.
+
+- **EDYNE clarified by Jack: stale/zero-volume token, not wash-trading
+  (2026-09-17).** Closing the anomaly flagged two entries up -- Jack
+  confirmed EDYNE currently has zero real trading volume despite its
+  208,982-trade Silver history; it's stale/dead, not a bot-driven outlier.
+  Distinguishing "stale" from "actively traded" isn't needed right now and
+  ties into the same deferred pool-liquidity-state gap already tracked in
+  docs/game_plan.md's Phase 1 -- revisit once that data exists, not before.
+
+- **First successful real-scale `lawrence.gold.entry_candidates` run
+  (2026-09-17).** After the column-trim + cap-raise fix above, notebook
+  02 completed cleanly against the real ~10.75M-row Silver history:
+  1,276,167 rows written. The new distinct-token check held up as
+  intended: 61,633 distinct tokens in Silver, 61,617 made it into Gold --
+  a 16-token (0.026%) gap, not zero. Given `_MAX_TRADES_PER_TOKEN` is
+  2,000,000 (no real token comes close), the cap did not cause this --
+  the far more likely explanation is the same dust-trade/zero-price
+  artifact already fixed in `price_at` (2026-09-17, above): a token whose
+  entire trade history has `price_usd <= 0` produces zero valid
+  assessment points and thus zero Gold rows, exactly like the gap this
+  distinct-token check was added to catch and explain rather than paper
+  over. Not independently confirmed against the real 16 token_ids (no
+  direct Databricks SQL access from this session -- Jack would need to
+  run `SELECT DISTINCT token_id FROM lawrence.silver.token_trades EXCEPT
+  SELECT DISTINCT token_id FROM lawrence.gold.entry_candidates` himself
+  to see them), but a 0.026% gap with a known, benign, already-fixed root
+  cause is not a red flag. notebook 03 (`exit_candidates`) not yet run/
+  reported.
