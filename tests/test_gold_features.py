@@ -6,6 +6,7 @@ builds. No PySpark/Databricks dependency, so these run in plain CI.
 from datetime import datetime, timedelta, timezone
 
 from features.gold_features import (
+    RUG_CLAMP_RETURN,
     build_entry_row,
     build_exit_rows,
     price_at,
@@ -94,10 +95,30 @@ def test_build_entry_row_computes_y_entry_and_carries_metadata():
     assert row["y_entry"] == (1.5 - 1.0) / 1.0
 
 
-def test_build_entry_row_drops_when_no_exit_price_available():
-    # only one trade, nothing near t + HOLD_MINUTES -- must drop, not guess
-    trades = [_trade(0, "buy", 1.0, 100)]
+def test_build_entry_row_drops_when_no_price_anchor_at_t():
+    # no trade at or before T at all -- a genuine data gap, still dropped
+    trades = [_trade(50, "buy", 1.0, 10)]
     assert build_entry_row("TOKEN123", T0, trades, hold_minutes=60) is None
+
+
+def test_build_entry_row_clamps_instead_of_dropping_when_exit_price_missing():
+    # real price + features at T, but nothing trades near t + HOLD_MINUTES --
+    # interim rug heuristic: keep the row, clamp the label, flag it
+    trades = [_trade(0, "buy", 1.0, 100), _trade(5, "buy", 1.0, 50)]
+    row = build_entry_row("TOKEN123", T0, trades, hold_minutes=60)
+    assert row is not None
+    assert row["y_entry"] == RUG_CLAMP_RETURN
+    assert row["is_rug_clamped"] is True
+
+
+def test_build_entry_row_marks_normal_rows_as_not_rug_clamped():
+    trades = [
+        _trade(0, "buy", 1.0, 100),
+        _trade(30, "buy", 1.0, 50),
+        _trade(60, "sell", 1.5, 80),
+    ]
+    row = build_entry_row("TOKEN123", T0, trades, hold_minutes=60)
+    assert row["is_rug_clamped"] is False
 
 
 def test_build_exit_rows_only_for_holds_with_a_synthetic_entry_price():
@@ -116,6 +137,27 @@ def test_build_exit_rows_only_for_holds_with_a_synthetic_entry_price():
     assert rows[0]["entry_price"] == 0.8
     assert rows[0]["unrealized_return"] == (1.0 - 0.8) / 0.8
     assert rows[0]["y_exit"] == (1.2 - 1.0) / 1.0
+    assert rows[0]["is_rug_clamped"] is False
+
+
+def test_build_exit_rows_clamps_instead_of_dropping_when_exit_price_missing():
+    # real price + features + a synthetic entry at T, but nothing trades
+    # near t + HOLD_MINUTES -- interim rug heuristic: keep the row(s),
+    # clamp y_exit, flag it (unrealized_return is unaffected -- it's a
+    # real, already-observed quantity, not the forward-looking label)
+    trades = [_trade(-15, "buy", 0.8, 10), _trade(0, "buy", 1.0, 100)]
+    rows = build_exit_rows(
+        "TOKEN123", T0, trades, hold_minutes=60,
+        simulated_holds=[timedelta(minutes=15)],
+    )
+    assert len(rows) == 1
+    assert rows[0]["y_exit"] == RUG_CLAMP_RETURN
+    assert rows[0]["is_rug_clamped"] is True
+
+
+def test_build_exit_rows_drops_when_no_price_anchor_at_t():
+    trades = [_trade(50, "buy", 1.0, 10)]
+    assert build_exit_rows("TOKEN123", T0, trades, hold_minutes=60) == []
 
 
 def test_sample_assessment_times_grid_spans_first_to_last_trade():

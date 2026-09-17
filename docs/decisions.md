@@ -366,3 +366,29 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   interim trade-log-only rug-clamp heuristic (see next entry) and revisit
   real liquidity/holder ingestion as a real, scheduled piece of work rather
   than an aspiration.
+
+- **Interim rug-clamping heuristic implemented (2026-09-17).** Jack decided
+  the rug-clamping gap must be fixed before the next Gold re-run ("the
+  model needs to see them as losses") -- not deferred. A real fix (detecting
+  an actual liquidity-pull event) needs pool-state data that doesn't exist
+  yet (see the entry above), so implemented an interim heuristic in
+  `src/features/gold_features.py` instead of waiting: `build_entry_row`/
+  `build_exit_rows` still drop a `(token_id, T)` row when there's no real
+  price at `T` itself (a genuine data gap), but no longer drop it when `T`
+  has a real price and only the exit side (`T + HOLD_MINUTES`) has nothing
+  to trade against -- that case is now treated as a proxy rug/dead-token
+  signal: the label is clamped to `RUG_CLAMP_RETURN` (-1.0, full loss)
+  instead of the row being dropped, and a new `is_rug_clamped` boolean
+  column is carried on every Gold row so these are inspectable/filterable
+  rather than silently mixed in with real-price-derived labels. This can't
+  tell an actual rug apart from a token that simply went quiet for other
+  reasons -- it's a stand-in for real liquidity-pull detection, not the
+  real thing -- but it removes the survivorship-bias risk of dropping these
+  rows entirely. Updated `gold_features.py`'s module docstring,
+  `docs/gold_spec.md`'s schema + rug-clamping section, and
+  `tests/test_gold_features.py` accordingly (couldn't run pytest in this
+  sandbox -- no pytest install and no network access to install it -- so
+  verified the new branches manually with a standalone script exercising
+  the same cases the updated tests cover; Jack should still run the real
+  test suite once he pulls this). Ready to re-run
+  `02_gold_entry_candidates.py`/`03_gold_exit_candidates.py` after this.

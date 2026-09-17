@@ -49,7 +49,7 @@ don't exist yet.
 
 `token_id`, `chain_family`, `network`, `dex_venue`, `dex_protocol`,
 `assessment_time` (T), `price_at_t`, `hold_minutes`, the trailing-feature
-columns above, `y_entry`.
+columns above, `y_entry`, `is_rug_clamped` (see "Rug-clamping" below).
 
 ## `exit_candidates` schema
 
@@ -57,24 +57,37 @@ Same columns as `entry_candidates`, plus: `simulated_holding_minutes` (h),
 `entry_price` (synthetic, `price_at(T - h)`), `unrealized_return`,
 `y_exit`. One `(token_id, T)` pair can produce multiple exit rows — one
 per `h` in `EXIT_SIMULATED_HOLDS` for which a synthetic entry price exists.
+All exit rows for the same `(token_id, T)` share the same `y_exit` and
+`is_rug_clamped` value (both are computed once from `T`/`T+hold_minutes`,
+independent of `h`).
 
-## KNOWN GAP: rug-clamping is not implemented — rows are dropped instead
+## Rug-clamping: interim heuristic (2026-09-17), not the real thing yet
 
 `label_spec.md`'s point-in-time rule says a token whose liquidity is
 pulled before `T + HOLD_MINUTES` should have its label **clamped at the
-realized loss at the pull event**, not read from a stale price. We have no
-liquidity/pool-state data to detect an actual pull event — only a trade
-log — so `build_entry_row`/`build_exit_rows` instead **drop** the
-`(token_id, T)` row entirely when no trade exists near `T + HOLD_MINUTES`
-to serve as an exit price (see `price_at`'s `max_staleness` cutoff).
+realized loss at the pull event**, not read from a stale price. We still
+have no liquidity/pool-state data to detect an actual pull event — only a
+trade log — so a *real* implementation of that rule isn't possible yet
+(tracked as essential-but-deferred work in `game_plan.md`'s Phase 1).
 
-This is a real survivorship-bias risk: it quietly excludes likely-rugged
-or now-dead tokens from training data instead of labeling them as the
-large losses they probably are — precisely what `game_plan.md` §2 warns
-backtests lie about ("smooth 50%+ average return... almost certainly
-survivorship bias"). Flagged here rather than silently shipped; revisit
-once Bronze ingests pool-liquidity state and an actual pull event can be
-detected.
+Rather than keep silently dropping these rows (a real survivorship-bias
+risk — precisely what `game_plan.md` §2 warns backtests lie about,
+"smooth 50%+ average return... almost certainly survivorship bias"),
+`build_entry_row`/`build_exit_rows` now use the trade log itself as a
+proxy signal: if `T` has a real price but no trade exists near
+`T + HOLD_MINUTES` to serve as an exit price (see `price_at`'s
+`max_staleness` cutoff), the row is **kept**, `y_entry`/`y_exit` is
+**clamped to `RUG_CLAMP_RETURN`** (a full realized loss) instead of
+dropped, and `is_rug_clamped=True` is set so these rows stay inspectable
+and filterable rather than silently mixed in.
+
+This is explicitly a heuristic, not real liquidity-pull detection — it
+can't distinguish an actual rug from a token that just stopped trading for
+other reasons — but it removes the survivorship bias that dropping the
+row would otherwise create. A row with a genuine data gap at `T` itself
+(no trade at or before `T`) is still dropped — that's a data-availability
+issue, not a rug signal. Swap this heuristic for real pull-event detection
+once Bronze ingests pool-liquidity state.
 
 ## Expected output volume right now
 

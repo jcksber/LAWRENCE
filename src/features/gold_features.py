@@ -19,17 +19,23 @@ Scope (v1, per docs/label_spec.md and docs/decisions.md):
 - Feature set limited to what Silver's token_trades actually has: trailing
   volume, buy/sell ratio, price action. Liquidity depth, holder
   concentration, and deployer wallet history are NOT included -- they need
-  Bronze sources (pool-state snapshots, wallet data) that don't exist yet.
-- KNOWN GAP, not silently handled: label_spec.md's rug-clamping rule ("if
-  liquidity is pulled before T+HOLD_MINUTES, clamp the label at the
-  realized loss at the pull event") is NOT implemented here. There's no
-  liquidity/pool-state data to detect an actual liquidity-pull event, only
-  a trade log. This module instead DROPS a (token, T) row when no trade
-  exists near T+HOLD_MINUTES to serve as an exit price. That's a real
-  survivorship-bias risk -- quietly excluding likely-rugged/dead tokens
-  from training data, rather than labeling them as the large losses they
-  are -- exactly what docs/game_plan.md's SS2 warns backtests lie about.
-  Revisit once Bronze ingests pool-liquidity state.
+  Bronze sources (pool-state snapshots, wallet data) that don't exist yet
+  (tracked in docs/game_plan.md's Phase 1 and docs/decisions.md).
+- INTERIM rug-clamping heuristic (2026-09-17, see docs/decisions.md):
+  label_spec.md's real rule is "if liquidity is pulled before
+  T+HOLD_MINUTES, clamp the label at the realized loss at the pull event."
+  That needs an actual liquidity-pull event, which needs pool-state data we
+  don't have -- only a trade log. Until that data exists, a token that had
+  a real price at T but no trade at all near T+HOLD_MINUTES (see
+  `price_at`'s `max_staleness`) is treated as a proxy rug/dead-token signal:
+  the label is clamped to RUG_CLAMP_RETURN instead of the row being dropped,
+  and `is_rug_clamped=True` is carried on the row so it stays inspectable
+  and filterable rather than hidden. This can't distinguish "rugged" from
+  "just went quiet" -- it's a stand-in for real liquidity-pull detection,
+  not the real thing -- but it removes the survivorship-bias risk that
+  quietly excluding these rows would otherwise create (exactly what
+  docs/game_plan.md's SS2 warns backtests lie about). Swap for real
+  pull-event detection once Bronze ingests pool-liquidity state.
 """
 from __future__ import annotations
 
@@ -52,6 +58,10 @@ EXIT_SIMULATED_HOLDS: list[timedelta] = [
     timedelta(minutes=60),
     timedelta(minutes=120),
 ]  # placeholder grid for simulated holding_duration h; see docs/label_spec.md
+
+RUG_CLAMP_RETURN = -1.0  # interim heuristic label for a likely-rugged/dead
+    # token (see module docstring) -- full realized loss, since we can't
+    # observe the actual liquidity-pull price without pool-state data.
 
 TokenTrades = list[dict[str, Any]]  # must be sorted ascending by trade_time
 
@@ -126,16 +136,25 @@ def build_entry_row(
     hold_minutes: int = HOLD_MINUTES,
 ) -> dict[str, Any] | None:
     """One lawrence.gold.entry_candidates row for (token_id, t), or None if
-    a price/feature endpoint isn't available (dropped -- see module
-    docstring's KNOWN GAP note on survivorship bias)."""
+    there's no real price/feature anchor at T itself (genuine data gap --
+    still dropped). If T has a real price but nothing trades near
+    T+hold_minutes, the row is KEPT with a clamped loss label instead of
+    being dropped -- see module docstring's interim rug-clamping note."""
     price_t = price_at(trades, t)
-    price_exit = price_at(trades, t + timedelta(minutes=hold_minutes))
-    if price_t is None or price_exit is None:
+    if price_t is None:
         return None
 
     features = trailing_activity_features(trades, t)
     if features is None:
         return None
+
+    price_exit = price_at(trades, t + timedelta(minutes=hold_minutes))
+    if price_exit is not None:
+        y_entry = (price_exit - price_t) / price_t
+        is_rug_clamped = False
+    else:
+        y_entry = RUG_CLAMP_RETURN
+        is_rug_clamped = True
 
     return {
         "token_id": token_id,
@@ -143,7 +162,8 @@ def build_entry_row(
         "assessment_time": t.isoformat(),
         "price_at_t": price_t,
         "hold_minutes": hold_minutes,
-        "y_entry": (price_exit - price_t) / price_t,
+        "y_entry": y_entry,
+        "is_rug_clamped": is_rug_clamped,
         **features,
     }
 
@@ -162,15 +182,22 @@ def build_exit_rows(
     training data via simulated entries" -- h is sampled independently of
     entry-model logic, by design."""
     price_t = price_at(trades, t)
-    price_exit = price_at(trades, t + timedelta(minutes=hold_minutes))
-    if price_t is None or price_exit is None:
+    if price_t is None:
         return []
 
     features = trailing_activity_features(trades, t)
     if features is None:
         return []
 
-    y_exit = (price_exit - price_t) / price_t
+    price_exit = price_at(trades, t + timedelta(minutes=hold_minutes))
+    if price_exit is not None:
+        y_exit = (price_exit - price_t) / price_t
+        is_rug_clamped = False
+    else:
+        # Interim heuristic (see module docstring): T had a real price but
+        # nothing trades near T+hold_minutes -- clamp instead of dropping.
+        y_exit = RUG_CLAMP_RETURN
+        is_rug_clamped = True
 
     rows = []
     for h in simulated_holds:
@@ -188,6 +215,7 @@ def build_exit_rows(
                 "entry_price": entry_price,
                 "unrealized_return": (price_t - entry_price) / entry_price,
                 "y_exit": y_exit,
+                "is_rug_clamped": is_rug_clamped,
                 **features,
             }
         )
