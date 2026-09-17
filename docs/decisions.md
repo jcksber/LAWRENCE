@@ -446,3 +446,30 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   labels); couldn't test the Spark-side `toLocalIterator()` mechanics
   themselves in this sandbox (no Spark/Databricks access here) -- that
   needs a real re-run to confirm the runtime actually resolves.
+
+- **Gold notebooks still slow after the collect()->streaming fix -- real
+  root cause was O(n) rescans in gold_features.py, not the Spark read
+  (2026-09-17).** After the toLocalIterator() fix, Jack's re-run showed the
+  underlying Spark statement (the orderBy read) completing in ~36s for all
+  10.76M rows, but the notebook cell kept running well past that -- a sign
+  the driver-side Python work after the read, not Spark, was the
+  bottleneck. Root cause: `price_at` and `trailing_activity_features` in
+  `src/features/gold_features.py` re-scanned a token's ENTIRE trade list
+  from the start (re-parsing every trade_time string along the way) on
+  EVERY call, despite `trades` always being sorted ascending by
+  trade_time. Called ~2-3x per assessment point, with points sampled every
+  15 minutes across a token's whole active history, this made
+  `build_entry_row`/`build_exit_rows` effectively O(n) per lookup x O(m)
+  lookups per token -- invisible while Gold only ever ran against near-zero
+  real history (per gold_spec.md's original "few or zero rows" assumption),
+  but the real bottleneck once real Dune-backfill-scale token histories
+  exist. Fixed by replacing the linear scans with a binary search
+  (`_count_at_or_before`, O(log n)) over the same sorted invariant --
+  verified against the old linear-scan logic with 3000 randomized
+  (trades, t) checks (zero mismatches) and measured ~37x faster on a single
+  5000-trade synthetic token (6.1s -> 0.16s for a full assessment-time
+  grid); the real speedup on the busiest real tokens will be larger still,
+  since the gap between O(n) and O(log n) widens with n. No public
+  function signature changed, so tests/test_gold_features.py needed no
+  changes and should still be the thing to run to confirm this didn't
+  change behavior.

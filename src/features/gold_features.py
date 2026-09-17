@@ -70,20 +70,42 @@ def _parse(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
+def _count_at_or_before(trades: TokenTrades, t: datetime) -> int:
+    """Binary search: how many trades have trade_time <= t. Requires
+    `trades` sorted ascending by trade_time (see TokenTrades) -- that's
+    already a hard invariant every caller in this module relies on.
+
+    2026-09-17 perf fix (see docs/decisions.md): price_at/
+    trailing_activity_features used to do a full O(len(trades)) linear
+    scan -- re-parsing every trade_time string along the way -- on EVERY
+    call. That was invisible while Gold only ever ran against near-zero
+    real history, but against the real Dune backfill (~10.75M Silver rows,
+    some tokens with thousands of trades, sampled every 15 minutes across
+    their whole active history) it made 02/03's driver-side Python loop the
+    actual bottleneck: the Spark read itself finishes in well under a
+    minute, but the notebook cell kept grinding for a long time after,
+    since none of that per-token math shows up as a Spark job/statement.
+    This turns each lookup into O(log n) instead of O(n)."""
+    lo, hi = 0, len(trades)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if _parse(trades[mid]["trade_time"]) <= t:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
 def price_at(
     trades: TokenTrades, t: datetime, *, max_staleness: timedelta = PRICE_STALENESS
 ) -> float | None:
     """Last real trade price at or before `t`, within `max_staleness` of it.
     Never looks forward past `t` -- point-in-time correctness. Returns None
     (not a guess) when nothing recent enough exists."""
-    best = None
-    for trade in trades:
-        ts = _parse(trade["trade_time"])
-        if ts > t:
-            break
-        best = trade
-    if best is None:
+    idx = _count_at_or_before(trades, t) - 1
+    if idx < 0:
         return None
+    best = trades[idx]
     if t - _parse(best["trade_time"]) > max_staleness:
         return None
     return float(best["price_usd"])
@@ -95,7 +117,9 @@ def trailing_activity_features(
     """Volume/buy-sell/price-action features over (t - window, t].
     Shared by entry and exit builds -- must never see anything after t."""
     window_start = t - window
-    windowed = [tr for tr in trades if window_start < _parse(tr["trade_time"]) <= t]
+    right = _count_at_or_before(trades, t)
+    left = _count_at_or_before(trades, window_start)
+    windowed = trades[left:right]
     if not windowed:
         return None
 
