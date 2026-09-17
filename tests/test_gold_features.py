@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from features.gold_features import (
     RUG_CLAMP_RETURN,
+    _parse,
     build_entry_row,
     build_exit_rows,
     price_at,
@@ -28,6 +29,37 @@ def _trade(minutes_offset, side, price, amount_usd):
         "dex_venue": "raydium_v4",
         "dex_protocol": "raydium_amm",
     }
+
+
+def test_parse_handles_iso_z_and_offset_and_dune_raw_shapes_identically():
+    # 2026-09-17: real Silver data has a mix of trade_time shapes -- see
+    # docs/decisions.md. A resumable backfill wrote some chunks before
+    # dune_client.py's block_time normalization existed, so Bronze/Silver
+    # genuinely contain both the clean ISO shape and Dune's raw
+    # "YYYY-MM-DD HH:MM:SS.mmm UTC" shape for real, not hypothetically.
+    expected = datetime(2026, 8, 18, 10, 16, 1, tzinfo=timezone.utc)
+    assert _parse("2026-08-18T10:16:01Z") == expected
+    assert _parse("2026-08-18T10:16:01+00:00") == expected
+    assert _parse("2026-08-18 10:16:01.000 UTC") == expected
+    assert _parse("2026-08-18 10:16:01 UTC") == expected  # no fractional seconds
+
+
+def test_parse_always_returns_tz_aware_datetime():
+    assert _parse("2026-08-18T10:16:01Z").tzinfo is not None
+    assert _parse("2026-08-18 10:16:01.000 UTC").tzinfo is not None
+
+
+def test_build_entry_row_handles_a_token_with_mixed_trade_time_shapes():
+    # A token whose trades mix both real-world shapes must not crash on
+    # datetime comparisons (aware vs. naive) and must compute correctly.
+    trades = [
+        _trade(0, "buy", 1.0, 100),
+        {**_trade(30, "buy", 1.0, 50), "trade_time": "2026-09-14 00:30:00.000 UTC"},
+        _trade(60, "sell", 1.5, 80),
+    ]
+    row = build_entry_row("TOKEN123", T0, trades, hold_minutes=60)
+    assert row is not None
+    assert row["y_entry"] == (1.5 - 1.0) / 1.0
 
 
 def test_price_at_returns_last_trade_at_or_before_t():

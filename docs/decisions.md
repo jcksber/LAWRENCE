@@ -562,3 +562,39 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   lawrence.gold` right before the write in both 02/03, so this is a
   one-time no-op from here rather than something Jack has to remember to
   set up by hand.
+
+- **Real Silver data has a mix of trade_time formats -- a resumable-backfill
+  side effect, not random corruption (2026-09-17).** applyInPandas ran
+  against real data and crashed inside `gold_features.py::_parse`:
+  `ValueError: Invalid isoformat string: '2026-08-18 10:16:01.000 UTC'`.
+  Traced the root cause: `src/features/silver_token_trades.py::to_silver_rows`
+  passes Bronze's `block_time` straight through as Silver's `trade_time`
+  with zero normalization (`"trade_time": bronze_row["block_time"]`).
+  `src/ingestion/dune_client.py::_normalize_block_time` DOES convert Dune's
+  raw `"YYYY-MM-DD HH:MM:SS.mmm UTC"` shape to a clean ISO
+  `"...T...Z"` string -- but that normalization was added in commit
+  `73d56aa`, which landed AFTER the backfill's resumability
+  (`bf6c541`). Resumability means a chunk already written and marked
+  'success' is skipped on every later re-run -- exactly the behavior we
+  wanted for efficiency -- but it also means a fix added mid-backfill never
+  retroactively reprocesses chunks that already succeeded under the old
+  code. Net effect: the real ~10.75M-row Bronze/Silver history genuinely
+  contains BOTH trade_time shapes side by side, not hypothetically -- some
+  chunks pre-date the normalization fix, some postdate it. This is a real,
+  general risk of the resumable-backfill pattern used throughout this
+  project (also in `01_silver_token_trades.py`'s catch-up mode) worth
+  keeping in mind for any future mid-backfill fix: a bug fixed today does
+  not retroactively apply to chunks already marked done.
+  Fixed at the READ/parse side rather than by rewriting already-verified
+  Bronze/Silver data: `gold_features.py::_parse` now handles both shapes
+  (ISO Z/offset, and Dune's raw space-separated + " UTC" suffix shape) and
+  always returns a UTC-aware datetime so aware/naive comparisons across
+  differently-sourced rows never mix and crash. Verified with a standalone
+  script (both shapes parse to the identical instant; a token whose trades
+  mix both shapes processes correctly) and added permanent regression
+  tests to `tests/test_gold_features.py` covering both shapes and a
+  mixed-shape token. Deliberately did NOT re-backfill Bronze/Silver to fix
+  this at the source -- that's real, costly rework for data Jack already
+  independently verified as correct (row counts, min/max), and this fix
+  makes any downstream reader of trade_time correct regardless of which
+  shape a given row happens to carry.

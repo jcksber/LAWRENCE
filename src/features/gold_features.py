@@ -39,7 +39,7 @@ Scope (v1, per docs/label_spec.md and docs/decisions.md):
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 HOLD_MINUTES = 60  # placeholder -- tune once real price-decay distributions
@@ -67,7 +67,25 @@ TokenTrades = list[dict[str, Any]]  # must be sorted ascending by trade_time
 
 
 def _parse(ts: str) -> datetime:
-    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    """Parses a trade_time string. Must handle two real shapes (2026-09-17,
+    see docs/decisions.md): the ISO-8601 "...Z"/"...+00:00" shape this
+    codebase writes going forward, AND Dune's raw
+    "YYYY-MM-DD HH:MM:SS.mmm UTC" shape, which turned up unnormalized in
+    real Silver data -- a resumable-backfill side effect: `_normalize_
+    block_time` in src/ingestion/dune_client.py was added to convert this
+    at write time, but resumability means chunks already written+marked
+    'success' before that fix never got reprocessed, so Bronze/Silver
+    genuinely contain a mix of both shapes for `block_time`/`trade_time`,
+    not just one. Always returns a UTC-aware datetime (never naive) so
+    comparisons between differently-sourced rows never mix aware/naive --
+    every timestamp in this codebase is UTC (see dune_client.py's own
+    normalization comment)."""
+    s = ts.strip()
+    if s.endswith(" UTC"):
+        dt = datetime.fromisoformat(s[: -len(" UTC")].replace(" ", "T", 1))
+    else:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 def _count_at_or_before(trades: TokenTrades, t: datetime) -> int:
