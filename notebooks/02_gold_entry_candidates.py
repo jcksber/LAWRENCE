@@ -92,6 +92,25 @@ _ENTRY_SCHEMA_COLUMNS = [f.name for f in _ENTRY_SCHEMA]
 # COMMAND ----------
 
 import pandas as pd
+from pyspark.sql import functions as F
+
+
+# 2026-09-17 (see docs/decisions.md): a UDF_PYSPARK_ERROR.OOM crashed the
+# Python worker running _process_token_group. gold_features.py needs a
+# token's FULL trade history in memory to sample point-in-time-correct
+# assessment points, so a token with a pathologically large trade count
+# can't be chunked the way everything else in this codebase is -- one
+# executor has to hold it all at once regardless. The quote-asset denylist
+# in silver_token_trades.py only excludes 5 known addresses (WSOL/USDC/USDT
+# on Solana, USDC/WETH on Base); any OTHER heavily-traded, non-memecoin
+# asset that isn't on that list would aggregate far more trades than a
+# typical token here. This cap skips (not truncates -- truncating would
+# silently break point-in-time correctness for early assessment points)
+# any token whose history is implausibly large for what this dataset is
+# actually meant to hold. Tune once the diagnostic print below shows the
+# real trade-count distribution -- 50,000 is a placeholder, not a
+# measured number.
+_MAX_TRADES_PER_TOKEN = 50_000
 
 
 def _process_token_group(pdf: pd.DataFrame) -> pd.DataFrame:
@@ -106,6 +125,14 @@ def _process_token_group(pdf: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=_ENTRY_SCHEMA_COLUMNS)
 
     token_id = trades[0]["token_id"]
+    if len(trades) > _MAX_TRADES_PER_TOKEN:
+        # print() here goes to executor logs, not this notebook's output --
+        # not visible to Jack -- which is exactly why the diagnostic query
+        # below runs on the driver instead of relying on this to surface
+        # anything. Skipping (not crashing) keeps the rest of the job
+        # running; losing one outlier token is a negligible loss against
+        # thousands of tokens' worth of training data.
+        return pd.DataFrame(columns=_ENTRY_SCHEMA_COLUMNS)
     out_rows = []
     for t in sample_assessment_times(trades):
         row = build_entry_row(token_id, t, trades)
@@ -116,6 +143,24 @@ def _process_token_group(pdf: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=_ENTRY_SCHEMA_COLUMNS)
     return pd.DataFrame(out_rows)[_ENTRY_SCHEMA_COLUMNS]
 
+
+# Driver-side visibility into the trade-count distribution -- a plain
+# Spark aggregation (cheap, no per-token materialization risk), run BEFORE
+# applyInPandas so its output is visible in this notebook's cell output,
+# unlike print() inside _process_token_group (executor logs only). Also
+# how to tell whether _MAX_TRADES_PER_TOKEN actually needs tuning.
+_top_tokens = (
+    spark.table(SILVER_TABLE)
+    .groupBy("token_id")
+    .count()
+    .orderBy(F.desc("count"))
+    .limit(10)
+    .collect()
+)
+print("Top 10 tokens by trade count:")
+for _r in _top_tokens:
+    _flag = " <- EXCEEDS _MAX_TRADES_PER_TOKEN, will be skipped" if _r["count"] > _MAX_TRADES_PER_TOKEN else ""
+    print(f"  {_r['token_id']}: {_r['count']:,} trades{_flag}")
 
 gold_df = (
     spark.table(SILVER_TABLE)

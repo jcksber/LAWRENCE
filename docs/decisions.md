@@ -627,3 +627,34 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   installed -- device_bash is an isolated VM without Jack's own
   Anaconda/PATH setup) -- Jack should run it in his own terminal to
   confirm before trusting this fully.
+
+- **UDF_PYSPARK_ERROR.OOM in applyInPandas -- likely one outlier token's
+  trade history, not a general memory problem (2026-09-17).** After the
+  price_usd==0.0 fix, the next real run crashed with "Python worker
+  exited unexpectedly (crashed) due to running out of memory" inside
+  `_process_token_group`. Leading theory: `gold_features.py` needs a
+  token's FULL trade history in memory to sample point-in-time-correct
+  assessment points, so unlike everything else in this codebase, a
+  token's group genuinely can't be chunked -- one executor has to hold it
+  all regardless of applyInPandas' distribution across OTHER tokens. The
+  quote-asset denylist in `silver_token_trades.py` only excludes 5 known
+  addresses (WSOL/USDC/USDT on Solana, USDC/WETH on Base); any other
+  heavily-traded, non-memecoin asset that isn't on that list (a major
+  token, a stablecoin not yet denylisted, etc.) would aggregate far more
+  trades than a typical memecoin and could plausibly be the single group
+  that overflowed one worker's memory.
+  Added two things to both 02/03: (1) `_MAX_TRADES_PER_TOKEN = 50_000` (a
+  placeholder, not a measured number) inside `_process_token_group` --
+  SKIPS (never truncates -- truncating would silently break point-in-time
+  correctness for early assessment points) any token whose trade count
+  exceeds it, so one outlier can't take the whole job down again; losing
+  one token is a negligible cost against thousands of tokens' worth of
+  training data. (2) A driver-side diagnostic query (`groupBy("token_id")
+  .count().orderBy(desc).limit(10)`) printed BEFORE the applyInPandas
+  call, since print() inside the UDF itself goes to executor logs, not
+  this notebook's visible output -- this is real visibility into the
+  actual trade-count distribution, which will confirm or refute the
+  outlier-token theory and tell us whether 50,000 is remotely the right
+  cap once Jack re-runs. Verified the skip-vs-process branching logic
+  with a standalone script (an oversized synthetic group returns the
+  correctly-shaped empty result; a normal-size group is unaffected).
