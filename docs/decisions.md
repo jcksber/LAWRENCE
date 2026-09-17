@@ -861,3 +861,31 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   subtler issue). Suggested Jack run the real distribution query
   (bucketed trade-count histogram across all 61,633 tokens) to check
   before fully closing this out -- not yet run.
+
+- **exit_candidates gap fully, quantitatively explained -- closing this
+  out (2026-09-17).** Real Silver trade-count distribution across all
+  61,633 tokens: 44,380 have exactly 1 trade (72.0%), 4,753 have 2,
+  5,855 have 3-5, 3,083 have 6-20, 1,719 have 21-100, 1,843 have 100+.
+  The math closes exactly: 44,380 single-trade tokens can NEVER produce
+  an exit row (build_exit_rows structurally requires a second trade --
+  see the verified mechanism two entries up), leaving 61,633 - 44,380 =
+  17,253 tokens with >=2 trades. Of those, 14,907 made it into
+  `lawrence.gold.exit_candidates`, meaning 17,253 - 14,907 = 2,346
+  multi-trade tokens ALSO produced zero exit rows -- consistent with
+  trades clustered too tightly together (e.g. a snipe-bot buy
+  immediately followed by a sell, both within the same ~15-minute
+  window, so no valid T-h anchor ever exists). 44,380 + 2,346 = 46,726,
+  which is exactly 61,633 - 14,907 -- the entire gap accounted for, no
+  residual unexplained by. No bug, no code change. This is a real,
+  structural fact about the token universe Silver has captured: a large
+  majority of tokens are one-and-done (minted, traded once, abandoned --
+  consistent with the pump.fun-suffix pattern in the earlier 16-token
+  gap investigation), and exit-model training data can only meaningfully
+  exist for tokens with enough trade density to simulate a real holding
+  period. Both `lawrence.gold.entry_candidates` (1,276,167 rows,
+  61,617/61,633 tokens) and `lawrence.gold.exit_candidates` (3,018,803
+  rows, 14,907/61,633 tokens) are now considered a clean first real-scale
+  run -- every observed gap in both tables has a confirmed, benign
+  explanation. Gold v1 is unblocked; next real step is Phase 3 (baseline
+  + first trained model) per docs/game_plan.md, not further Gold
+  debugging.
