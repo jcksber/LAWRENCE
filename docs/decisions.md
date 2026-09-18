@@ -1217,3 +1217,55 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   Not yet run -- Jack needs to execute this in Databricks and report back
   real credit-balance deltas and the resulting distinct-token counts for
   each lever before any real spend decision gets made.
+
+- **Cost-test results: "more Solana venues" beats "more calendar time" by
+  roughly 50x, not a close call (2026-09-18).** Jack ran all three
+  `00d_dune_cost_test.py` cells. Real numbers, not estimates:
+
+  | project (version) | 7-day n_trades | 7-day n_distinct_tokens | trades/token |
+  |---|---|---|---|
+  | `pumpdotfun` (1) | 20,059,502 | **206,902** | ~97 |
+  | `raydium_launchlab` (1) | 3,410,279 | 42,479 | ~80 |
+  | `meteora` (3) | 18,971,523 | 39,932 | ~475 |
+  | `meteora` (4) | 5,862,721 | 24,438 | ~240 |
+  | `pumpswap` (1) | 113,425,521 | 24,177 | ~4,692 |
+  | `raydium` (4, ALREADY BACKFILLED) | 1,852,123 (current window) | 2,793 (current window) | ~663 |
+  | `raydium` (4) EXTEND-TIME lever, 7 days before current window | 937,161 | 4,085 | ~229 |
+
+  Extending `raydium_v4` 7 days further back (cell 3) buys 4,085 new
+  distinct tokens. Adding `pumpdotfun` for the SAME 7 days already
+  covered by the current backfill (cell 2) buys 206,902 -- ~50x more,
+  for a window that's already paid for and needs no calendar extension
+  at all. `raydium_launchlab` and `meteora` (v3/v4) are the next-best
+  levers, each ~6-10x the extend-time yield.
+
+  A second finding worth acting on, not just the headline ranking:
+  **`pumpdotfun` and `raydium_launchlab` are also the most row-efficient
+  additions**, not just the highest-token-count ones -- ~80-97
+  trades/token, actually BELOW `raydium_v4`'s own ~229-663 trades/token,
+  because they're literally launch venues (bonding-curve/launchpad
+  mechanics), matching LAWRENCE's actual "score a new token launch"
+  framing more directly than `raydium_v4` ever did. `pumpswap` and
+  `meteora`, despite big token counts, carry much heavier trade volume
+  per token (graduated/already-liquid tokens) -- real signal, but
+  markedly more expensive to extract per unit of new training signal.
+  Several other discovered venues (`bisonfi`, `humidifi`, `tessera`,
+  `scorch`, `goonfi`, `alphaq` -- all from cell 1/2) have huge trade
+  counts/volume but under 30 distinct tokens each -- not memecoin/launch
+  venues at all (likely stablecoin/perp/MM infrastructure), explicitly
+  not worth adding for this project's purpose.
+
+  **Real cost caveat, not yet resolved:** `pumpdotfun` alone scales to
+  roughly 86M trades for a full month at this rate (20.06M/week x ~4.3),
+  `raydium_launchlab` to ~14.7M -- combined, roughly 10x the current
+  Bronze dataset's total row volume for the SAME one-month window. Real
+  Dune query cost for a trade-level extract at that row count is
+  unmeasured (the cost-test cells were aggregates, not trade-level
+  SELECTs -- see `dune_client.py`'s own COST INCIDENT note: aggregate
+  cost doesn't predict trade-level extract cost 1:1). Credit-balance
+  deltas for the three test cells themselves were not yet reported by
+  Jack, so actual $ spent so far and $/row for a real extract are both
+  still unknown. Next: get those numbers, then decide real scope (full
+  month of `pumpdotfun`+`raydium_launchlab`, a shorter window first as a
+  real-cost test at trade-level, or something in between) before touching
+  `00c_bronze_backfill_dune.py`'s `VENUES`/`DUNE_VENUE_FILTERS`.
