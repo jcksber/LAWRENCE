@@ -1269,3 +1269,38 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   month of `pumpdotfun`+`raydium_launchlab`, a shorter window first as a
   real-cost test at trade-level, or something in between) before touching
   `00c_bronze_backfill_dune.py`'s `VENUES`/`DUNE_VENUE_FILTERS`.
+
+- **Correction: the cost-test itself burned through the whole free-tier
+  balance, and "let it self-limit" doesn't hold once pay-as-you-go is
+  active (2026-09-18).** Jack reported running out of Dune credits after
+  the three cost-test cells -- the "aggregates are cheap" assumption
+  `00d_dune_cost_test.py`'s own markdown leaned on was wrong for this
+  table at this scale: cell 2's unfiltered 7-day discovery scanned
+  roughly 200M+ rows across ALL ~26 Solana DEX projects (summing every
+  project's `n_trades` in the previous entry's table) to produce one
+  aggregate -- MORE rows scanned than the entire proposed
+  `pumpdotfun`+`raydium_launchlab` month-long extract (~101M rows) would
+  need, because an unfiltered query can't skip the 24 other projects'
+  data the way a `WHERE project = ...` filter can. Lesson: never run
+  another unfiltered discovery scan -- filter by project from the start
+  now that the real labels are known.
+
+  Separately, and more importantly: Jack had picked "start the full
+  month now, let it self-limit" for scope, reasoning the resumable
+  progress table + per-chunk writes would cap any damage the way they
+  did during the original backfill. That reasoning held when the only
+  currency was a fixed free-credit balance that hard-stops at zero. It
+  does NOT hold now that the chosen funding path is Free-plan pay-as-you-
+  go top-ups (Jack's own earlier choice, previous entries) -- pay-as-you-
+  go has no ceiling by design; "self-limiting" would mean it keeps
+  charging a real payment method until Jack manually stops it, not until
+  some safe free-tier wall is hit. Flagged back to Jack before running
+  anything at full scale, with a rough extrapolated cost estimate
+  (calibrated off the completed month/2-venue backfill's own ~10,000-
+  12,500-credit, ~10.75M-row economics): roughly 100,000-120,000 credits
+  for a full month of `pumpdotfun`+`raydium_launchlab` at ~101M rows --
+  $5,000-$6,000 on Free's $0.05/credit rate, or roughly $1,500-$1,600 on
+  one month of Plus. Recommending a small real paid test slice (a single
+  day, project-filtered, trade-level) to replace this rough extrapolation
+  with a real number before committing to anything close to full scope --
+  not yet decided.
