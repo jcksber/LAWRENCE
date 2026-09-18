@@ -1304,3 +1304,31 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   day, project-filtered, trade-level) to replace this rough extrapolation
   with a real number before committing to anything close to full scope --
   not yet decided.
+
+- **Wired pumpdotfun + raydium_launchlab into the real backfill, scoped to
+  a one-day test first (2026-09-18).** Per Jack's decision (top up a
+  small amount, test one real day before committing to full scope):
+  - Added both as new `Venue`/`DuneVenueFilter` entries in
+    `00c_bronze_backfill_dune.py`, same `dex_solana.trades` table/column
+    shape as `raydium_v4` (confirmed via `00d`'s discovery queries, which
+    already read `token_bought_mint_address` successfully for both --
+    not guessed). `version = 1` unquoted for both, matching the
+    2026-09-15 lesson that `version` is an integer column.
+    `dex_program_or_address` is an explicit unverified placeholder --
+    these are Dune-backfill-only for now, no live Bitquery counterpart.
+  - Restructured the main chunking loop from "for each time chunk: for
+    each venue" to "for each venue: for each chunk in that venue's own
+    window" (new `VENUE_WINDOWS` dict, defaulting to the shared
+    `BACKFILL_WINDOW_START/END` for any venue not listed). This lets
+    `pumpdotfun`/`raydium_launchlab` start on a single day
+    (2026-09-12 to 09-13) without touching `raydium_v4`/
+    `uniswap_v3_base`'s already-completed full-month window at all --
+    those two keep skipping every chunk via the progress table exactly
+    as before. Sanity-checked the chunk-count arithmetic standalone
+    (30+30+1+1=62 total chunks, only 2 of which do real work this run).
+  Not yet run. Next: Jack tops up Dune credits, runs the notebook, reports
+  the real per-day cost for these two venues (check the progress table:
+  `SELECT * FROM lawrence.bronze._dune_backfill_progress WHERE venue_name
+  IN ('pumpdotfun', 'raydium_launchlab') AND status = 'success'` alongside
+  the Dune credit-balance delta) -- then decide whether to widen
+  `VENUE_WINDOWS` to the full month at that measured rate.

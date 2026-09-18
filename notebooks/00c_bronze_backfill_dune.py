@@ -34,6 +34,21 @@
 # MAGIC table carries a usable on-chain transaction fee. Live rows from
 # MAGIC `00_bronze_dex_ingestion.py` (`source = 'bitquery'`) are unaffected. See
 # MAGIC `dune_client.py`'s module docstring and `docs/decisions.md`.
+# MAGIC
+# MAGIC **2026-09-18 addition: `pumpdotfun` + `raydium_launchlab`.** Added after
+# MAGIC `00d_dune_cost_test.py`'s aggregate queries showed `pumpdotfun` alone
+# MAGIC yields ~50x more distinct tokens/week than extending `raydium_v4`
+# MAGIC further back in time -- see `docs/decisions.md`'s cost-test entries.
+# MAGIC **These two start on a deliberately narrow ONE-DAY test window**
+# MAGIC (`VENUE_WINDOWS` below), not the full month -- a real trade-level
+# MAGIC extract at their volume (~86M/~15M rows for a full month) is unmeasured
+# MAGIC cost territory, and the cost-test's own unfiltered discovery queries
+# MAGIC already burned ~750 credits just to find that out. **Run this notebook,
+# MAGIC check your Dune credit balance before/after, and report the real
+# MAGIC per-day cost before widening `VENUE_WINDOWS` to the full month.**
+# MAGIC `raydium_v4`/`uniswap_v3_base` are unaffected either way -- they keep
+# MAGIC their already-completed full-month window and skip every chunk via the
+# MAGIC progress table, same as any other re-run of this notebook.
 
 # COMMAND ----------
 
@@ -75,6 +90,26 @@ BACKFILL_WINDOW_END = datetime(2026, 9, 13, tzinfo=timezone.utc)
 CHUNK_HOURS = 24  # daily -- proven fine at real volume (7 days succeeded
                   # before the incident); no need for anything finer.
 
+# 2026-09-18 (see docs/decisions.md): per-venue window override, defaulting
+# to the full BACKFILL_WINDOW_START/END above for any venue not listed here.
+# raydium_v4/uniswap_v3_base already completed the full month -- leaving
+# them on the shared window is safe and free, the progress table skips
+# every chunk they already finished. pumpdotfun/raydium_launchlab start
+# on a DELIBERATELY NARROW single-day window: a real trade-level extract
+# at their volume is unmeasured territory (00d's cost-test was aggregates,
+# not extracts -- see docs/decisions.md's "aggregates are cheap" correction
+# entry), and the prior unfiltered discovery scan alone burned ~750 credits.
+# **Get one real day's actual credit cost before widening this to the full
+# month** -- change the two dates below back to BACKFILL_WINDOW_START/END
+# (or just delete these two dict entries) once you've confirmed the cost
+# is one you're OK paying at full-month scale.
+_TEST_DAY_START = datetime(2026, 9, 12, tzinfo=timezone.utc)
+_TEST_DAY_END = datetime(2026, 9, 13, tzinfo=timezone.utc)
+VENUE_WINDOWS: dict[str, tuple[datetime, datetime]] = {
+    "pumpdotfun": (_TEST_DAY_START, _TEST_DAY_END),
+    "raydium_launchlab": (_TEST_DAY_START, _TEST_DAY_END),
+}
+
 BRONZE_TABLE = "lawrence.bronze.dex_trades"
 PROGRESS_TABLE = "lawrence.bronze._dune_backfill_progress"
 
@@ -92,6 +127,25 @@ VENUES: list[Venue] = [
         chain_family=ChainFamily.EVM,
         network="base",
         dex_program_or_address="0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+    ),
+    # 2026-09-18 (see docs/decisions.md): added after the cost-test notebook
+    # (00d) showed pumpdotfun alone yields ~50x more distinct tokens/week
+    # than extending raydium_v4 further back in time, in a window that's
+    # already backfilled. Dune-backfill-only for now -- no live Bitquery
+    # ingestion counterpart exists yet, so `dex_program_or_address` is a
+    # placeholder, not a verified on-chain program address (unlike
+    # raydium_v4/uniswap_v3_base's real addresses above). Do NOT wire this
+    # Venue into 00_bronze_dex_ingestion.py's live VENUES list using this
+    # placeholder -- get the real program address first if/when that's needed.
+    Venue(
+        name="pumpdotfun",
+        chain_family=ChainFamily.SOLANA,
+        dex_program_or_address="UNVERIFIED_DUNE_BACKFILL_ONLY_NOT_A_REAL_ADDRESS",
+    ),
+    Venue(
+        name="raydium_launchlab",
+        chain_family=ChainFamily.SOLANA,
+        dex_program_or_address="UNVERIFIED_DUNE_BACKFILL_ONLY_NOT_A_REAL_ADDRESS",
     ),
 ]
 
@@ -128,6 +182,32 @@ DUNE_VENUE_FILTERS: dict[str, DuneVenueFilter] = {
             "token_bought_symbol", "token_sold_symbol",
             "token_bought_amount", "token_sold_amount", "amount_usd",
             "token_bought_address", "token_sold_address",
+        ],
+    ),
+    # 2026-09-18 (see docs/decisions.md): same dex_solana.trades table and
+    # column shape as raydium_v4 above -- confirmed via 00d_dune_cost_test.py's
+    # discovery queries, which read token_bought_mint_address successfully
+    # for every project including these two, not guessed. `version` is an
+    # integer column (unquoted literal) -- same lesson as raydium_v4's own
+    # 2026-09-15 QUERY_STATE_FAILED bug from quoting it.
+    "pumpdotfun": DuneVenueFilter(
+        table="dex_solana.trades",
+        where_sql="project = 'pumpdotfun' AND version = 1",
+        columns=[
+            "block_time", "tx_id", "project", "version", "version_name",
+            "token_bought_symbol", "token_sold_symbol",
+            "token_bought_amount", "token_sold_amount", "amount_usd",
+            "token_bought_mint_address", "token_sold_mint_address",
+        ],
+    ),
+    "raydium_launchlab": DuneVenueFilter(
+        table="dex_solana.trades",
+        where_sql="project = 'raydium_launchlab' AND version = 1",
+        columns=[
+            "block_time", "tx_id", "project", "version", "version_name",
+            "token_bought_symbol", "token_sold_symbol",
+            "token_bought_amount", "token_sold_amount", "amount_usd",
+            "token_bought_mint_address", "token_sold_mint_address",
         ],
     ),
 }
@@ -225,27 +305,49 @@ print(f"{len(completed_success)} chunk(s) already completed in a previous run --
 client = DuneClient(api_key=DUNE_API_KEY)
 ingested_at = datetime.now(timezone.utc)
 
+# 2026-09-18: each venue now walks ITS OWN window (VENUE_WINDOWS override,
+# defaulting to the shared BACKFILL_WINDOW_START/END) -- restructured from
+# "for each time chunk: for each venue" to "for each venue: for each chunk
+# in that venue's own window" so a newly-added venue can start on a
+# deliberately narrow test window without touching the already-completed
+# venues' full-month range at all. Progress-table keys are still just
+# (venue_name, chunk_start, chunk_end), so nothing about the skip-check
+# changes for raydium_v4/uniswap_v3_base.
+venue_chunk_counts = {
+    venue.name: max(
+        1,
+        int(
+            (VENUE_WINDOWS.get(venue.name, (BACKFILL_WINDOW_START, BACKFILL_WINDOW_END))[1]
+             - VENUE_WINDOWS.get(venue.name, (BACKFILL_WINDOW_START, BACKFILL_WINDOW_END))[0]
+            ).total_seconds() // 3600 // CHUNK_HOURS
+        ),
+    )
+    for venue in VENUES
+}
+total_chunks = sum(venue_chunk_counts.values())
 total_rows_written = 0
-chunk_start = BACKFILL_WINDOW_START
 chunk_n = 0
-total_chunks = int(
-    (BACKFILL_WINDOW_END - BACKFILL_WINDOW_START).total_seconds() // 3600 // CHUNK_HOURS
-) * len(VENUES)
 aborted = False
 
-while chunk_start < BACKFILL_WINDOW_END and not aborted:
-    chunk_end = min(chunk_start + timedelta(hours=CHUNK_HOURS), BACKFILL_WINDOW_END)
-    chunk_start_str = chunk_start.strftime("%Y-%m-%d %H:%M:%S")
-    chunk_end_str = chunk_end.strftime("%Y-%m-%d %H:%M:%S")
+for venue in VENUES:
+    if aborted:
+        break
+    venue_filter = DUNE_VENUE_FILTERS[venue.name]
+    window_start, window_end = VENUE_WINDOWS.get(venue.name, (BACKFILL_WINDOW_START, BACKFILL_WINDOW_END))
+    chunk_start = window_start
 
-    for venue in VENUES:
+    while chunk_start < window_end:
+        chunk_end = min(chunk_start + timedelta(hours=CHUNK_HOURS), window_end)
+        chunk_start_str = chunk_start.strftime("%Y-%m-%d %H:%M:%S")
+        chunk_end_str = chunk_end.strftime("%Y-%m-%d %H:%M:%S")
         chunk_n += 1
         key = (venue.name, chunk_start_str, chunk_end_str)
+
         if key in completed_success:
             print(f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start_str}, {chunk_end_str}) already done -- skipping")
+            chunk_start = chunk_end
             continue
 
-        venue_filter = DUNE_VENUE_FILTERS[venue.name]
         try:
             dune_rows = client.fetch_historical_trades(
                 venue_filter=venue_filter, since_iso=chunk_start_str, till_iso=chunk_end_str
@@ -269,6 +371,7 @@ while chunk_start < BACKFILL_WINDOW_END and not aborted:
             # the rest -- log (as retryable, not done) and move on.
             _log_progress(venue.name, chunk_start_str, chunk_end_str, "failed", 0)
             print(f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start_str}, {chunk_end_str}) FAILED: {exc}")
+            chunk_start = chunk_end
             continue
 
         try:
@@ -284,14 +387,14 @@ while chunk_start < BACKFILL_WINDOW_END and not aborted:
                 f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start_str}, {chunk_end_str}) "
                 f"WRITE FAILED (fetched {len(dune_rows)} rows, not written): {exc}"
             )
+            chunk_start = chunk_end
             continue
 
         total_rows_written += rows_written
         _log_progress(venue.name, chunk_start_str, chunk_end_str, "success", rows_written)
         completed_success.add(key)
         print(f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start_str}, {chunk_end_str}): {rows_written} rows written")
-
-    chunk_start = chunk_end
+        chunk_start = chunk_end
 
 print(f"\nTotal rows written to {BRONZE_TABLE} (source=dune) this run: {total_rows_written}")
 if aborted:
