@@ -109,3 +109,21 @@ anything pip-related changed. Cheap to do unconditionally; the failure
 mode it prevents is expensive to diagnose (identical output across
 multiple "redeploy and re-run" cycles looks exactly like the fix didn't
 take effect, when it's actually a caching artifact one layer up).
+
+## A dead Spark session needs a detach/re-attach, not just a re-run (2026-09-18)
+
+If a notebook crashes mid-run with `INACTIVITY_TIMEOUT_AND_FAILED_TO_RESTORE`
+(the compute session went idle long enough to be torn down -- e.g. a Dune
+chunk paginating for minutes with zero Spark activity, see decisions.md
+2026-09-18) or `NO_ACTIVE_SESSION` on a later cell, the notebook's `spark`
+object is permanently stale for the rest of that attached session --
+re-running cells from where it crashed will NOT create a fresh one.
+
+**Detach and re-attach the cluster (or "Reconnect," whatever the UI calls
+it for your compute type) first, then re-run the WHOLE notebook from the
+top cell** -- not just the cell that failed. Every notebook-level variable
+(`spark`, `client`, secrets fetched via `dbutils.secrets.get`, etc.) needs
+fresh initialization after reattaching. This is safe to do freely for any
+notebook that uses a resumable progress table (00c's pattern) -- already-
+`success` chunks are skipped on the re-run, so nothing gets re-paid-for
+except whatever chunk was actually in flight when the session died.
