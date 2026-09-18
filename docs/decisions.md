@@ -1135,3 +1135,48 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   Next step (not yet decided): most likely more real trading history
   accumulating naturally over time, rather than another immediate model
   change -- revisit once meaningfully more Silver data exists.
+
+- **Dune pricing research for expanding the historical backfill
+  (2026-09-18).** Jack asked to add training data faster/cheaper than
+  waiting weeks for live accumulation to fix the data-starvation read
+  from the v2 backtest (previous entry). Researched Dune's current
+  pricing before proposing a plan, since the existing backfill's
+  "5 separate API keys" pattern (2026-09-15 entries) is exactly the kind
+  of usage Dune just moved against:
+  - **2026-09-10 policy change:** legacy free accounts (created before
+    2026-07-21) lost query-execution ability entirely (view-only now,
+    with a one-time 14-day Plus trial offered before reverting), cited as
+    an anti-abuse move against "rising compute costs." Newer accounts
+    aren't immediately affected, but this is explicit evidence Dune is
+    actively closing the free-credit-cycling path the first backfill
+    relied on -- not a foundation to keep building on for a second round.
+  - **Current plan structure:** Free plan still includes 2,500
+    credits/month + API access, with pay-as-you-go top-ups at a flat
+    $5.00/100 credits ($0.05/credit) and NO subscription required. Plus
+    is $349/month flat, ~25,000 credits included (~$0.014/credit average
+    at full use); Analyst overage is $1.875/100 credits monthly. Credits
+    are consumed by actual compute (rows scanned + engine time), not a
+    fixed per-row rate, matching what the original COST INCIDENT already
+    found empirically.
+  - **Rough empirical burn rate, from the completed backfill:** 1 month
+    (2026-08-14 to 09-13), both venues, trimmed columns, took ~4-5
+    free-tier credit exhaustions to finish -- roughly 10,000-12,500
+    credits for that window. That's already past the ~9,500-credit point
+    where a single month of Plus ($349 flat) would have been cheaper than
+    paying Free's $0.05/credit rate out of pocket ($500-625).
+  Proposed plan (not yet decided/executed -- see next entry once Jack
+  picks the parameters): (1) stop relying on further free-account
+  cycling -- fragile now and the exact pattern Dune is closing; (2) run a
+  cheap aggregate cost-test (COUNT(*)/GROUP BY, same playbook as the
+  original cost-test, well under $1) comparing credits-per-day for
+  extending raydium_v4's window further back in calendar time vs. adding
+  1-2 more Solana venues (pump.fun bonding curve, Orca, Meteora -- however
+  `dex_solana.trades` tags them) within the CURRENT window, since the
+  entry model's actual data-starvation is in distinct tokens/candidates,
+  not calendar density, and it's not yet known which lever is cheaper per
+  new distinct token; (3) spend on whichever measures cheaper, via Free's
+  pay-as-you-go top-up unless the measured need exceeds ~9,500 credits (in
+  which case one month of Plus, then downgrade, is the cheaper option);
+  (4) skip extending the EVM/uniswap_v3_base side -- blue-chip tokens
+  aren't the data-starved population, the high-token-count memecoin/
+  launchpad side is.
