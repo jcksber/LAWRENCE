@@ -1094,3 +1094,44 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   real thing in Databricks. Next step: redeploy and re-run notebooks/04,
   watching whether `lightgbm_model`'s ev_per_trade improves relative to
   Baseline B now that both changes are in.
+
+- **v2 backtest result: still loses to Baseline B in every fold, but the
+  gap closes sharply as training history grows (2026-09-18).** Jack
+  re-ran notebooks/04 with both v2 changes (categorical features,
+  `preds > round_trip_cost()`) in:
+
+  | fold | lightgbm ev/trade | baseline_b ev/trade | gap | lightgbm n_trades |
+  |---|---|---|---|---|
+  | 0 | -0.6162 | -0.2604 | -0.356 | 5,345 |
+  | 1 | -0.5266 | -0.2513 | -0.275 | 759 |
+  | 2 | -0.3708 | -0.2580 | -0.113 | 676 |
+  | 3 | -0.3409 | -0.2586 | -0.082 | 797 |
+  | 4 | -0.2666 | -0.2533 | -0.013 | 538 |
+
+  Two honest reads, not one triumphant one:
+  1. **Not a win yet.** Pooled across all folds (`sum(total_return) /
+     sum(n_trades)`), lightgbm_model's ev/trade is -0.537, worse than
+     both baseline_a (-0.392) and baseline_b (-0.257). v2's changes did
+     NOT flip the headline result from the first backtest -- the model
+     still loses.
+  2. **The gap is closing fold-over-fold, and that trend is real enough to
+     act on.** `baseline_b`'s ev/trade is roughly flat across all 5 folds
+     (-0.260 to -0.251) -- a fixed threshold rule, it doesn't benefit from
+     more training history by construction. `lightgbm_model`'s ev/trade
+     improves monotonically as the walk-forward training window expands
+     (fold 0's -0.616 to fold 4's -0.267), closing a 0.356 gap down to
+     0.013 -- nearly tied in the last fold. That's consistent with a model
+     that's genuinely data-starved, not a model that's wrong in kind --
+     more real trading history (which keeps accumulating) may be what it
+     actually needs, more than another feature/threshold tweak right now.
+  Caveat worth flagging, not burying: `n_trades` for `lightgbm_model`
+  collapsed to 538-797 per fold (down from thousands under v1's
+  `preds > 0` -- `round_trip_cost()` is a much stricter bar, as intended).
+  Fold 4's win_rate (0.229) is also a clear outlier vs. every other fold's
+  0.06-0.13, on only 538 trades. A trend built on a few hundred trades per
+  fold could easily be noise dressed up as a pattern, not yet strong
+  enough evidence to declare "getting more data will fix this" -- it's
+  a hypothesis the trend supports, not a conclusion the trend proves.
+  Next step (not yet decided): most likely more real trading history
+  accumulating naturally over time, rather than another immediate model
+  change -- revisit once meaningfully more Silver data exists.
