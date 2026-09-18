@@ -1042,3 +1042,55 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   in is the next step -- not done yet, and this time the "Start training
   from score" values changing is itself the confirmation signal to look
   for, before even getting to the backtest table.
+
+- **Entry model v2: categorical features + a cost-aware decision rule
+  (2026-09-18).** v1's first real backtest (previous entries) showed the
+  LightGBM model losing to Baseline B on ev_per_trade in every
+  walk-forward fold. Jack asked to pursue optimizing the model further;
+  two concrete, independently-motivated changes landed together in this
+  pass (`src/models/entry_model.py`, `src/backtest/walk_forward.py`,
+  `notebooks/04_entry_baseline_and_model.py`, plus their tests):
+  1. **Categorical features.** v1 was deliberately numeric-only (see its
+     own module docstring) -- `chain_family`/`network`/`dex_venue`/
+     `dex_protocol` are real signal LightGBM can use natively via
+     `category`-dtype columns (no one-hot needed), but v1 punted on the
+     encoding decision to keep the first pass simple. `FEATURE_COLUMNS`
+     is now `NUMERIC_FEATURE_COLUMNS + CATEGORICAL_FEATURE_COLUMNS`, and
+     a new `set_categorical_dtypes()` casts the four categorical columns
+     to pandas `category` dtype. Its docstring explains the one real
+     footgun: it MUST run once on the FULL dataset before walk-forward
+     splitting, never per-fold -- pandas derives a category-dtype
+     column's category set from whatever values are present at cast
+     time, so casting each fold's subset separately could give the same
+     column inconsistent category sets across folds (a category seen
+     only in a later fold's test data would look "unseen" to LightGBM
+     instead of just less common). The notebook now calls it once on
+     `entry_df` right after sorting, before the fold loop.
+  2. **Cost-aware entry threshold.** v1's decision rule was simply
+     `preds > 0`, which ignores the ~1.6% round-trip trading cost (30bps
+     fee + 50bps slippage, each way) `simulate_trades` already charges --
+     a model predicting a small positive return (say, +0.5%) would still
+     "enter" a trade that's a guaranteed loss after real costs. Added
+     `DEFAULT_FEE_BPS`/`DEFAULT_SLIPPAGE_BPS` and a `round_trip_cost()`
+     helper to `walk_forward.py` (refactoring `simulate_trades` to call
+     it internally instead of duplicating the formula), so the notebook's
+     decision rule (`preds > round_trip_cost()`) and the backtest's own
+     cost accounting are guaranteed to use the exact same numbers --
+     never two cost assumptions that could quietly drift apart.
+  Verification note (same device_bash sandbox limitation as every prior
+  entry -- no network, no lightgbm/scikit-learn/mlflow installed): all
+  non-lightgbm-dependent tests (gold_features, baselines, walk_forward,
+  including new tests for `round_trip_cost` and its shared-formula
+  guarantee with `simulate_trades`) ran for real against real pandas and
+  passed. For `entry_model.py`'s new tests (`set_categorical_dtypes`,
+  the winsorized-target check, the categorical-dtype-survives-
+  prepare_features check), real `lightgbm` still isn't installable here,
+  so they were additionally run against a small stand-in `LGBMRegressor`
+  (plain least-squares regression on the numeric columns only) so the
+  actual plumbing -- casting, column selection, winsorization, fit/
+  score/reproducibility -- gets exercised end-to-end rather than just
+  skipped outright. That stand-in can't validate real categorical-split
+  behavior or gradient-boosting quality; Jack still needs to confirm the
+  real thing in Databricks. Next step: redeploy and re-run notebooks/04,
+  watching whether `lightgbm_model`'s ev_per_trade improves relative to
+  Baseline B now that both changes are in.

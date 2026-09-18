@@ -37,6 +37,31 @@ import pandas as pd
 
 from features.gold_features import RETURN_WINSORIZE_CAP, winsorize_return
 
+# 2026-09-18 (see docs/decisions.md): v1's notebook entry decision rule was
+# simply "predicted > 0", which ignores the round-trip trading cost
+# simulate_trades already applies below -- a model predicting, say, a 0.5%
+# return would still "enter" even though that trade is a guaranteed loss
+# once the ~1.6% round-trip cost (30bps fee + 50bps slippage, each way) is
+# paid. Named here, not just inlined in simulate_trades, so the notebook's
+# decision rule (`preds > round_trip_cost()`) uses the EXACT SAME cost
+# assumptions the backtest itself scores that decision against -- two
+# different cost numbers for "should I enter" vs. "what did entering cost
+# me" would make the backtest lie about whether the threshold change
+# actually helped.
+DEFAULT_FEE_BPS = 30.0
+DEFAULT_SLIPPAGE_BPS = 50.0
+
+
+def round_trip_cost(
+    fee_bps: float = DEFAULT_FEE_BPS, slippage_bps: float = DEFAULT_SLIPPAGE_BPS
+) -> float:
+    """Round-trip trading cost as a fraction of position size (fee +
+    slippage, paid on both entry and exit) -- same formula `simulate_trades`
+    applies internally, exposed here so callers (the notebook's entry
+    decision rule) can share it instead of re-deriving or hard-coding
+    `0.016`."""
+    return 2 * (fee_bps + slippage_bps) / 10_000
+
 
 def walk_forward_folds(
     assessment_time: pd.Series, *, n_folds: int = 5
@@ -132,8 +157,8 @@ def simulate_trades(
     cumulative curve otherwise doesn't mean anything.
     """
     y_true = winsorize_return(y_true)
-    round_trip_cost = 2 * (fee_bps + slippage_bps) / 10_000
-    trades = y_true[enter_mask].astype(float) - round_trip_cost
+    cost = round_trip_cost(fee_bps, slippage_bps)
+    trades = y_true[enter_mask].astype(float) - cost
 
     n_candidates = int(len(y_true))
     n_trades = int(len(trades))

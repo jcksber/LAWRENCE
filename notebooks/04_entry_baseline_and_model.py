@@ -64,8 +64,14 @@ import mlflow.lightgbm
 import pandas as pd
 
 from backtest.baselines import baseline_a_buy_everything, baseline_b_volume_momentum_filter
-from backtest.walk_forward import simulate_trades, walk_forward_folds
-from models.entry_model import FEATURE_COLUMNS, prepare_features, score_candidates, train_entry_model
+from backtest.walk_forward import round_trip_cost, simulate_trades, walk_forward_folds
+from models.entry_model import (
+    FEATURE_COLUMNS,
+    prepare_features,
+    score_candidates,
+    set_categorical_dtypes,
+    train_entry_model,
+)
 
 # COMMAND ----------
 
@@ -88,6 +94,12 @@ entry_df["assessment_time"] = pd.to_datetime(entry_df["assessment_time"], utc=Tr
 # walk_forward_folds/simulate_trades both require chronological order --
 # see their docstrings.
 entry_df = entry_df.sort_values("assessment_time").reset_index(drop=True)
+# 2026-09-18 (see docs/decisions.md, entry_model.py's set_categorical_dtypes
+# docstring): MUST run once here, on the full dataset, before folds split it
+# into train/test slices -- casting per-fold subsets separately would give
+# each fold's category-dtype columns their own, possibly inconsistent
+# category set for the same column.
+entry_df = set_categorical_dtypes(entry_df)
 print(f"Loaded {len(entry_df):,} rows from {GOLD_ENTRY_TABLE}, "
       f"{entry_df['assessment_time'].min()} to {entry_df['assessment_time'].max()}, "
       f"{entry_df['is_rug_clamped'].mean():.1%} rug-clamped")
@@ -128,10 +140,15 @@ with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
         strategies = {
             "baseline_a_buy_everything": baseline_a_buy_everything(test_df),
             "baseline_b_volume_momentum": baseline_b_volume_momentum_filter(test_df),
-            # v1 decision rule: enter anything with a positive predicted
-            # return. Ranking by score and taking a top-K is an easy
+            # 2026-09-18 (see docs/decisions.md): v1's "predicted > 0" rule
+            # let the model "enter" trades with a predicted return between
+            # 0% and the ~1.6% round-trip cost simulate_trades charges below
+            # -- a guaranteed loss after costs. round_trip_cost() here uses
+            # simulate_trades' own default fee/slippage assumptions, so the
+            # entry decision and the cost that scores it agree with each
+            # other. Ranking by score and taking a top-K is still an easy
             # variant to try later -- see entry_model.py's score_candidates.
-            "lightgbm_model": preds > 0,
+            "lightgbm_model": preds > round_trip_cost(),
         }
 
         for strategy_name, enter_mask in strategies.items():
