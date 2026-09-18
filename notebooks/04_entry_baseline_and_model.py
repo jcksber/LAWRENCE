@@ -38,6 +38,23 @@
 
 # COMMAND ----------
 
+# 2026-09-18 (see docs/decisions.md): NOT just for the pip-installed
+# packages above. src/models/, src/backtest/, src/features/ are imported
+# via sys.path.append (below), not pip -- on an interactive
+# cluster/session that stays warm across notebook reruns, Python caches
+# those in sys.modules the first time they're imported and does NOT
+# re-read them from disk on a later run, even after a real code change is
+# committed/deployed. Restarting here, before any of those imports
+# happen, guarantees a clean slate every run instead of silently serving
+# whatever version of src/ happened to be imported earliest in this
+# session -- caught because a real fix (winsorize_return) landed on disk,
+# was independently confirmed present via a fresh import in a scratch
+# cell, and yet a full notebook re-run still produced byte-identical
+# results to before the fix.
+dbutils.library.restartPython()
+
+# COMMAND ----------
+
 import sys
 
 sys.path.append("../src")

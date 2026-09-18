@@ -1004,3 +1004,41 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   baselines/walk_forward suite (34/34) against real pandas in the
   device_bash sandbox. Re-running notebooks/04 with this fix in is the
   next step -- not done yet.
+
+- **Byte-identical results across two "redeploy and re-run" cycles was
+  module caching, not a deploy-sync issue or a bug in the fix itself
+  (2026-09-18).** After the winsorize fix (previous entry), notebooks/04
+  produced the EXACT same "Start training from score" values and the
+  EXACT same backtest table as the pre-fix run -- not just similar,
+  bit-for-bit identical, across two separate redeploy+re-run cycles.
+  Since `train_entry_model` uses a fixed `random_state`, identical input
+  -> identical output, so this was strong evidence the fix's code path
+  wasn't actually running, not that it ran and failed.
+  Ruled out step by step: (1) confirmed the fix was genuinely committed
+  (`git status` clean at `ca5d23a`, `prepare_features` calls
+  `winsorize_return` in the file on disk); (2) asked Jack to confirm a
+  git push had happened before deploy (a real risk given my commits land
+  locally via the device bridge, not pushed by me -- see the working-
+  style constraints at the top of this doc) and to run a scratch-cell
+  sanity check (`from features.gold_features import RETURN_WINSORIZE_CAP,
+  winsorize_return; print(...)`) -- came back `100.0`/`100.0`, proving
+  the correct code WAS present and callable in that session.
+  That combination (file correct, function correct when called fresh,
+  full notebook re-run still stale) pointed at Python module caching:
+  `sys.path.append("../src")`-imported local modules
+  (`features.*`/`backtest.*`/`models.*`) are plain Python imports, not
+  pip packages -- an interactive cluster/session that stays warm across
+  notebook reruns caches them in `sys.modules` on first import and does
+  NOT re-read them from disk on a later run. The notebook's own `%pip
+  install` cell only guarantees fresh code for pip packages; it doesn't
+  address this. Fixed by adding `dbutils.library.restartPython()` right
+  after the `%pip install` cell, before any `src/` imports -- this is
+  exactly the call I'd originally included when first writing this
+  notebook and then deliberately removed as unnecessary (see the
+  original Phase 3 kickoff entry); that removal was the wrong call.
+  Documented as a standing convention in docs/conventions.md rather than
+  just a one-off fix, since any future notebook importing from `src/` on
+  a warm session has the same exposure. Re-running notebooks/04 with this
+  in is the next step -- not done yet, and this time the "Start training
+  from score" values changing is itself the confirmation signal to look
+  for, before even getting to the backtest table.

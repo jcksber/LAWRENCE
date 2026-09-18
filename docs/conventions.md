@@ -83,3 +83,29 @@ This isn't about making output noisier for its own sake -- it's the
 difference between "check back in 5 minutes and see if the counter moved"
 and "interrupt, add print statements, redeploy, re-run from scratch" to
 answer the exact same question.
+
+## Restart Python before importing local `src/` modules on a warm cluster/session (2026-09-18)
+
+A notebook's `%pip install` cell only guarantees fresh code for
+pip-installed packages. Anything imported via `sys.path.append("../src")`
+(this repo's `features.*`/`backtest.*`/`models.*` modules) is a plain
+Python import, not a pip package -- on an interactive cluster/session
+that stays warm across notebook reruns, Python caches those modules in
+`sys.modules` the first time they're imported and does **not** re-read
+them from disk on a later run, even after a real code change lands and is
+redeployed. This produced a genuinely confusing incident (see
+decisions.md, 2026-09-18): a real fix (`winsorize_return`) landed on
+disk, was independently confirmed present via a fresh import in a scratch
+cell, and yet re-running the full notebook still produced byte-identical
+output to before the fix -- because the notebook's own `import
+models.entry_model` (etc.) was silently serving a cached pre-fix module
+object from an earlier run in that same session, not the updated file.
+
+**Any notebook that imports from this repo's `src/` should call
+`dbutils.library.restartPython()` once, before those imports, not just
+after `%pip install`.** This guarantees a clean interpreter -- and
+therefore a clean `sys.modules` -- on every run, regardless of whether
+anything pip-related changed. Cheap to do unconditionally; the failure
+mode it prevents is expensive to diagnose (identical output across
+multiple "redeploy and re-run" cycles looks exactly like the fix didn't
+take effect, when it's actually a caching artifact one layer up).
