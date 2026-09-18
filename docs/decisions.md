@@ -1332,3 +1332,32 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   IN ('pumpdotfun', 'raydium_launchlab') AND status = 'success'` alongside
   the Dune credit-balance delta) -- then decide whether to widen
   `VENUE_WINDOWS` to the full month at that measured rate.
+
+- **Test-day run crashed on a Databricks session timeout mid-pumpdotfun-
+  fetch, not a Dune error (2026-09-18).** Jack ran the notebook from the
+  previous entry; it crashed with `BAD_REQUEST: session_id is no longer
+  usable... INACTIVITY_TIMEOUT_AND_FAILED_TO_RESTORE`, raised from INSIDE
+  the `except Exception` write-failure handler -- meaning the original
+  `_write_bronze` call failed (dead Spark session), and then the
+  fallback `_log_progress("failed", ...)` call ALSO failed for the same
+  reason, so the whole notebook crashed instead of cleanly logging and
+  continuing. Real cost consequence: that chunk's Dune fetch had already
+  succeeded (real credits spent, real rows returned) before the write
+  step, but none of it reached Bronze or the progress table -- a re-run
+  has to re-fetch and re-pay for that specific chunk.
+  Root cause: `pumpdotfun`'s daily chunk is ~2.9M rows (00d's 7-day
+  measurement), vastly more than `raydium_v4`'s ~60k-260k rows/day that
+  daily chunking was originally proven against. Paginating that many rows
+  from Dune is minutes of pure Python/HTTP work with zero Spark activity
+  -- long enough for the compute session to go idle and get torn down
+  mid-fetch.
+  Fixed: new `VENUE_CHUNK_HOURS` override (same pattern as `VENUE_WINDOWS`),
+  set to 1 hour for `pumpdotfun`/`raydium_launchlab` (raydium_v4/
+  uniswap_v3_base keep 24h, proven fine). At the measured 7-day rate this
+  puts pumpdotfun at roughly 120k rows/chunk instead of ~2.9M -- keeps
+  each fetch+write cycle short enough to avoid tripping the idle timeout,
+  and gives more frequent checkpoints if anything else goes wrong.
+  Sanity-checked the updated chunk-count math standalone: pumpdotfun/
+  raydium_launchlab now 24 hourly chunks each for the one test day
+  (raydium_v4/uniswap_v3_base unaffected, still 30 daily chunks each,
+  all already `success` and skipped). Not yet re-run.

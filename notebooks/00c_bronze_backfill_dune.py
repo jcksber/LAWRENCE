@@ -110,6 +110,27 @@ VENUE_WINDOWS: dict[str, tuple[datetime, datetime]] = {
     "raydium_launchlab": (_TEST_DAY_START, _TEST_DAY_END),
 }
 
+# 2026-09-18 (see docs/decisions.md): per-venue CHUNK_HOURS override, same
+# reasoning/pattern as VENUE_WINDOWS above. raydium_v4/uniswap_v3_base
+# proved fine at 24h chunks against their own volume (~60k-260k rows/day).
+# pumpdotfun is a different animal: ~2.9M rows/day at the 7-day rate 00d
+# measured. A single fetch_historical_trades() call that size means
+# minutes of pure Python/HTTP pagination against Dune with NO Spark
+# activity at all -- long enough that the compute session went idle and
+# Databricks tore it down mid-fetch (a real run: "session_id is no longer
+# usable... INACTIVITY_TIMEOUT_AND_FAILED_TO_RESTORE" -- crashed the write
+# AND the except block's own fallback _log_progress() write, since both
+# need the same dead Spark session; that chunk's Dune credits were spent
+# fetching real rows that then went nowhere, not written to Bronze or the
+# progress table, so a re-run has to re-fetch and re-pay for it). Smaller
+# chunks keep each individual fetch+write cycle short enough that the
+# session never sits idle long enough to time out, AND give more frequent
+# partial-progress checkpoints if something else goes wrong mid-run.
+VENUE_CHUNK_HOURS: dict[str, int] = {
+    "pumpdotfun": 1,
+    "raydium_launchlab": 1,
+}
+
 BRONZE_TABLE = "lawrence.bronze.dex_trades"
 PROGRESS_TABLE = "lawrence.bronze._dune_backfill_progress"
 
@@ -319,7 +340,7 @@ venue_chunk_counts = {
         int(
             (VENUE_WINDOWS.get(venue.name, (BACKFILL_WINDOW_START, BACKFILL_WINDOW_END))[1]
              - VENUE_WINDOWS.get(venue.name, (BACKFILL_WINDOW_START, BACKFILL_WINDOW_END))[0]
-            ).total_seconds() // 3600 // CHUNK_HOURS
+            ).total_seconds() // 3600 // VENUE_CHUNK_HOURS.get(venue.name, CHUNK_HOURS)
         ),
     )
     for venue in VENUES
@@ -334,10 +355,11 @@ for venue in VENUES:
         break
     venue_filter = DUNE_VENUE_FILTERS[venue.name]
     window_start, window_end = VENUE_WINDOWS.get(venue.name, (BACKFILL_WINDOW_START, BACKFILL_WINDOW_END))
+    chunk_hours = VENUE_CHUNK_HOURS.get(venue.name, CHUNK_HOURS)
     chunk_start = window_start
 
     while chunk_start < window_end:
-        chunk_end = min(chunk_start + timedelta(hours=CHUNK_HOURS), window_end)
+        chunk_end = min(chunk_start + timedelta(hours=chunk_hours), window_end)
         chunk_start_str = chunk_start.strftime("%Y-%m-%d %H:%M:%S")
         chunk_end_str = chunk_end.strftime("%Y-%m-%d %H:%M:%S")
         chunk_n += 1
