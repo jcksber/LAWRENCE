@@ -323,3 +323,47 @@ def test_fetch_historical_trades_selects_only_configured_columns_not_star():
     sql = submit_call.kwargs["json"]["sql"]
     assert "SELECT block_time, tx_id, amount_usd FROM dex_solana.trades" in sql
     assert "SELECT *" not in sql
+
+
+def test_run_sql_submits_the_exact_sql_given_and_returns_all_rows():
+    # 2026-09-18 (see docs/decisions.md): run_sql is the general-purpose
+    # escape hatch for one-off diagnostic queries (e.g. a cheap
+    # COUNT(*)/GROUP BY cost-test) that don't fit DuneVenueFilter's
+    # trade-row shape -- confirm it submits arbitrary SQL verbatim, not
+    # just whatever fetch_historical_trades happens to build.
+    client = DuneClient(api_key="fake", poll_interval_s=0)
+    submit_resp = _mock_response({"execution_id": "exec456"})
+    status_resp = _mock_response({"state": "QUERY_STATE_COMPLETED"})
+    results_resp = _mock_response(
+        {"result": {"rows": [{"project": "raydium", "n": 100}]}}
+    )
+    sql = "SELECT project, COUNT(*) as n FROM dex_solana.trades GROUP BY project"
+
+    with patch(
+        "ingestion.dune_client.requests.request",
+        side_effect=[submit_resp, status_resp, results_resp],
+    ) as mock_req:
+        rows = client.run_sql(sql)
+
+    submit_call = mock_req.call_args_list[0]
+    assert submit_call.kwargs["json"]["sql"] == sql
+    assert rows == [{"project": "raydium", "n": 100}]
+
+
+def test_fetch_historical_trades_delegates_to_run_sql():
+    # Refactor guard (2026-09-18): fetch_historical_trades should still
+    # produce exactly the same query it always did, now routed through
+    # run_sql rather than duplicating submit/wait/fetch itself.
+    client = DuneClient(api_key="fake", poll_interval_s=0)
+    submit_resp = _mock_response({"execution_id": "exec789"})
+    status_resp = _mock_response({"state": "QUERY_STATE_COMPLETED"})
+    results_resp = _mock_response({"result": {"rows": [{"a": 1}]}})
+
+    with patch(
+        "ingestion.dune_client.requests.request",
+        side_effect=[submit_resp, status_resp, results_resp],
+    ):
+        rows = client.fetch_historical_trades(
+            RAYDIUM_FILTER, "2026-09-01 00:00:00", "2026-09-01 01:00:00"
+        )
+    assert rows == [{"a": 1}]

@@ -194,6 +194,20 @@ class DuneClient:
             f"AND block_time < TIMESTAMP '{till_iso}' "
             f"AND {venue_filter.where_sql}"
         )
+        return self.run_sql(sql, performance)
+
+    def run_sql(self, sql: str, performance: str = "medium") -> list[dict[str, Any]]:
+        """Runs arbitrary raw SQL and returns every result row -- the
+        general-purpose escape hatch `fetch_historical_trades` builds on
+        top of for the specific trade-row shape. Exists as its own public
+        method (2026-09-18, see docs/decisions.md) for one-off diagnostic
+        queries -- e.g. a cheap COUNT(*)/GROUP BY cost-test before sizing
+        a real backfill expansion -- that don't fit `DuneVenueFilter`'s
+        trade-row assumptions (a fixed column list, a `dex_protocol`-style
+        `WHERE`). Caller is responsible for keeping the query itself cheap
+        (aggregate, narrow time window) -- this method has no guardrail of
+        its own beyond `DuneCreditsExhausted` surfacing a 402 immediately,
+        same as `fetch_historical_trades`."""
         execution_id = self._submit(sql, performance)
         self._wait_until_done(execution_id)
         return self._fetch_all_rows(execution_id)

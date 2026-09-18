@@ -1180,3 +1180,40 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   (4) skip extending the EVM/uniswap_v3_base side -- blue-chip tokens
   aren't the data-starved population, the high-token-count memecoin/
   launchpad side is.
+
+- **Wrote the cost-test tooling for the Dune backfill-expansion decision
+  (2026-09-18, following the previous entry's proposed plan).** Jack
+  picked: fund via Dune's Free-plan pay-as-you-go ($0.05/credit, no
+  subscription), and run the cost-test before spending anything.
+  Added `DuneClient.run_sql()` -- a general-purpose "run this exact SQL,
+  return all rows" method, since the existing `fetch_historical_trades`
+  is hard-coded to `DuneVenueFilter`'s trade-row shape (fixed columns,
+  `WHERE`-fragment-only filtering) and can't express an aggregate
+  `COUNT(*)`/`GROUP BY` cost-test query. `fetch_historical_trades` now
+  delegates to it (pure refactor, same SQL it always built, covered by a
+  regression test). New `notebooks/00d_dune_cost_test.py` runs three
+  staged, cost-gated aggregate queries -- deliberately small and run one
+  at a time, with an explicit instruction to check the real Dune credit
+  balance after each before running the next (an unfiltered-by-project
+  discovery scan is real new territory: every single-venue query this
+  backfill has run so far filtered to one project, so this could scan
+  more rows than Jack's used to paying for):
+  1. A 1-hour unfiltered discovery query (what Solana DEXs exist at all,
+     by trade count/distinct tokens/volume) -- the same "tiny window"
+     size the original (pre-incident) cost-test used, run first
+     specifically to confirm this query shape is cheap before widening it.
+  2. A 7-day unfiltered discovery query over the last week of the
+     already-backfilled window (2026-09-06 to 09-13) -- big enough to
+     actually rank candidate venues (pump.fun/Orca/Meteora/whatever
+     Dune's `project` labels turn out to be -- not yet verified against
+     real data, deliberately discovered rather than guessed, matching
+     this project's established "verify against live Dune data before
+     trusting a literal" practice from the raydium_v4 filter bugs).
+  3. The same 7-day-window distinct-token-count query, but for
+     `raydium_v4` specifically, 7 days immediately BEFORE the current
+     backfill's start (2026-08-07 to 08-14) -- the "extend calendar time"
+     lever's yield, directly comparable to #2's `raydium` row for "extend
+     to more venues in the same window already paid for."
+  Not yet run -- Jack needs to execute this in Databricks and report back
+  real credit-balance deltas and the resulting distinct-token counts for
+  each lever before any real spend decision gets made.
