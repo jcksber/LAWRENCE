@@ -155,6 +155,8 @@ class DuneClient:
         a raw requests exception leaking out uncaught (the actual bug
         behind the 2026-09-15 incident -- only _submit had this before)."""
         last_err: Exception | None = None
+        last_status: int | None = None
+        last_body: str = ""
         for attempt in range(self.max_retries):
             try:
                 resp = requests.request(
@@ -169,11 +171,24 @@ class DuneClient:
                 return resp.json()
             except DuneCreditsExhausted:
                 raise  # never retry a balance failure
+            except requests.HTTPError as exc:
+                # 2026-09-19: capture status/body before the generic
+                # RuntimeError below -- without this, EVERY non-2xx
+                # failure (401 bad key, 403 no execute permission on a
+                # legacy pre-cutoff account, 429 rate limit, 5xx) looked
+                # identical ("failed after 3 attempts"), which is exactly
+                # what made a real key-cycling failure unreadable when it
+                # started happening on 2026-09-19. See docs/decisions.md.
+                last_err = exc
+                last_status = exc.response.status_code if exc.response is not None else None
+                last_body = (exc.response.text[:500] if exc.response is not None else "")
+                time.sleep(2**attempt)
             except requests.RequestException as exc:
                 last_err = exc
                 time.sleep(2**attempt)
         raise RuntimeError(
-            f"Dune {method} {url} failed after {self.max_retries} attempts"
+            f"Dune {method} {url} failed after {self.max_retries} attempts "
+            f"(last_status={last_status}, last_body={last_body!r})"
         ) from last_err
 
     def fetch_historical_trades(

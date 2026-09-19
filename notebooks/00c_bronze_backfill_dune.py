@@ -39,16 +39,15 @@
 # MAGIC `00d_dune_cost_test.py`'s aggregate queries showed `pumpdotfun` alone
 # MAGIC yields ~50x more distinct tokens/week than extending `raydium_v4`
 # MAGIC further back in time -- see `docs/decisions.md`'s cost-test entries.
-# MAGIC **These two start on a deliberately narrow ONE-DAY test window**
-# MAGIC (`VENUE_WINDOWS` below), not the full month -- a real trade-level
-# MAGIC extract at their volume (~86M/~15M rows for a full month) is unmeasured
-# MAGIC cost territory, and the cost-test's own unfiltered discovery queries
-# MAGIC already burned ~750 credits just to find that out. **Run this notebook,
-# MAGIC check your Dune credit balance before/after, and report the real
-# MAGIC per-day cost before widening `VENUE_WINDOWS` to the full month.**
-# MAGIC `raydium_v4`/`uniswap_v3_base` are unaffected either way -- they keep
-# MAGIC their already-completed full-month window and skip every chunk via the
-# MAGIC progress table, same as any other re-run of this notebook.
+# MAGIC A one-day test window measured the real cost (~780 credits/million
+# MAGIC rows) -- now widened to the full `BACKFILL_WINDOW_START`/`END` range,
+# MAGIC same as `raydium_v4`/`uniswap_v3_base`. Funded via free-tier key-
+# MAGIC cycling (swap `DUNE_API_KEY` below as each account's free credits run
+# MAGIC out; a freshly-created Dune account is required post-2026-09-10 policy
+# MAGIC change -- an older account is view-only now, see decisions.md), not
+# MAGIC pay-as-you-go, so this is $0 real-dollar spend by design. The progress
+# MAGIC table makes swapping keys mid-run safe regardless of which account ran
+# MAGIC which chunk.
 
 # COMMAND ----------
 
@@ -94,20 +93,20 @@ CHUNK_HOURS = 24  # daily -- proven fine at real volume (7 days succeeded
 # to the full BACKFILL_WINDOW_START/END above for any venue not listed here.
 # raydium_v4/uniswap_v3_base already completed the full month -- leaving
 # them on the shared window is safe and free, the progress table skips
-# every chunk they already finished. pumpdotfun/raydium_launchlab start
-# on a DELIBERATELY NARROW single-day window: a real trade-level extract
-# at their volume is unmeasured territory (00d's cost-test was aggregates,
-# not extracts -- see docs/decisions.md's "aggregates are cheap" correction
-# entry), and the prior unfiltered discovery scan alone burned ~750 credits.
-# **Get one real day's actual credit cost before widening this to the full
-# month** -- change the two dates below back to BACKFILL_WINDOW_START/END
-# (or just delete these two dict entries) once you've confirmed the cost
-# is one you're OK paying at full-month scale.
-_TEST_DAY_START = datetime(2026, 9, 12, tzinfo=timezone.utc)
-_TEST_DAY_END = datetime(2026, 9, 13, tzinfo=timezone.utc)
+# every chunk they already finished.
+#
+# pumpdotfun/raydium_launchlab started on a deliberately narrow single-day
+# test window (2026-09-12) to measure real per-row cost before committing
+# to a full month -- that measurement is done (see decisions.md: ~780
+# credits/million rows, 2,489.006 credits / 3,191,268 rows for the test
+# day). Widened to the full BACKFILL_WINDOW_START/END below now that the
+# cost is known and accepted. Funding is free-tier key-cycling (swap
+# DUNE_API_KEY below as each account's credits run out -- the progress
+# table makes that safe, same as always), not pay-as-you-go, so there's no
+# real-dollar exposure from widening this.
 VENUE_WINDOWS: dict[str, tuple[datetime, datetime]] = {
-    "pumpdotfun": (_TEST_DAY_START, _TEST_DAY_END),
-    "raydium_launchlab": (_TEST_DAY_START, _TEST_DAY_END),
+    "pumpdotfun": (BACKFILL_WINDOW_START, BACKFILL_WINDOW_END),
+    "raydium_launchlab": (BACKFILL_WINDOW_START, BACKFILL_WINDOW_END),
 }
 
 # 2026-09-18 (see docs/decisions.md): per-venue CHUNK_HOURS override, same

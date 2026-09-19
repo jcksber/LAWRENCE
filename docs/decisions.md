@@ -1361,3 +1361,50 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   raydium_launchlab now 24 hourly chunks each for the one test day
   (raydium_v4/uniswap_v3_base unaffected, still 30 daily chunks each,
   all already `success` and skipped). Not yet re-run.
+
+- **Test-day run succeeded after the chunking fix -- real cost-per-row
+  measured (2026-09-18).** Both new venues completed 24/24 hourly chunks
+  for the one test day (2026-09-12): `pumpdotfun` 2,701,352 rows,
+  `raydium_launchlab` 489,916 rows -- 3,191,268 rows total. Actual Dune
+  spend for that day: 2,489.006 credits. That gives a real, measured
+  cost-per-row for the first time (not an extrapolation from the original
+  raydium_v4/uniswap_v3_base backfill): ~780 credits/million rows,
+  slightly cheaper than the earlier rough estimate (~930-1,163
+  credits/million rows) -- validates that estimate's ballpark accuracy.
+  `pumpdotfun` is 84.65% of the combined row volume (2,701,352/3,191,268)
+  and, assuming a shared per-row rate, an equivalent share of the day's
+  cost (~2,107 of the 2,489 credits) -- `raydium_launchlab` alone is
+  roughly 6.5x cheaper for a full month than `pumpdotfun` alone.
+  Full-month (30-day) projections at this rate:
+  | scope | credits | Free pay-as-you-go ($0.05/credit) | Plus overage (25k/mo included, $0.01596/credit over) |
+  |---|---|---|---|
+  | both venues | ~74,670 | ~\$3,734 | ~\$793 (+ \$349 base) |
+  | pumpdotfun only | ~63,207 | ~\$3,160 | ~\$610 (+ \$349 base) |
+  | raydium_launchlab only | ~11,463 | ~\$573 | \$0 (+ \$349 base, fits in included credits) |
+  Shorter windows as a middle ground: 1 week (both venues) ~17,423
+  credits / ~\$871 Free / fits inside Plus's included 25k; 2 weeks
+  ~34,846 credits / ~\$1,742 Free / ~\$157 Plus overage.
+  Decision on final scope/plan/window left to Jack -- not yet made.
+
+- **Full-month widen (2026-09-19): `pumpdotfun`/`raydium_launchlab`
+  `VENUE_WINDOWS` widened to the full `BACKFILL_WINDOW_START`/`END`
+  range.** Test-day cost was measured and accepted (previous entry);
+  funding is free-tier key-cycling, not pay-as-you-go, so no real-dollar
+  exposure from widening. Run started fine (chunks already completed from
+  the earlier test day correctly skipped via the progress table), but
+  every NEW chunk from `2026-08-19 00:00` onward failed with a generic
+  `Dune POST .../sql/execute failed after 3 attempts` -- `_request`'s
+  retry loop was swallowing the actual HTTP status/response body on every
+  non-402 failure, so there was no way to tell a bad/expired key (401), a
+  legacy account without execute permission (403 -- see the 2026-09-10
+  Dune policy change noted earlier), rate limiting (429), or a Dune-side
+  5xx apart; they all rendered identically. Fixed: `_request` now catches
+  `requests.HTTPError` specifically and includes `last_status`/`last_body`
+  (first 500 chars of the response) in the final `RuntimeError` message.
+  402 handling (`DuneCreditsExhausted`, raised immediately, never
+  retried) is unchanged. Verified via mocked `requests.request` for both
+  the new error-detail path and the pre-existing 402/success paths (real
+  pytest not available in this sandbox, same standing limitation as
+  elsewhere in this doc). Not yet re-run for real -- next step is Jack
+  re-running so the real status/body tells us whether this is a bad key
+  or an execute-permission issue on the newest friend's account.
