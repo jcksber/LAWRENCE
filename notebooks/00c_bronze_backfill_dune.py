@@ -287,6 +287,24 @@ _BRONZE_SCHEMA = StructType([
 ])
 
 
+# 2026-09-20: a single chunk's row list going straight into one
+# spark.createDataFrame(list_of_dicts, ...) call is a driver-local
+# operation (Python list -> Py4J -> JVM, not distributed like reading
+# from a source) -- the whole batch, raw_json blob included per row,
+# gets marshalled through the driver's JVM heap at once. A live run hit
+# "RESOURCE_EXHAUSTED: Java heap space" on chunk 479 (only 119,638 rows
+# -- chunk 465 had written 206,846 fine shortly before), pointing at
+# cumulative driver heap pressure over a long-running session (many
+# hundreds of chunks, one JVM the whole time) rather than any single
+# chunk being "too big" on its own -- see docs/decisions.md. Restarting
+# the compute resets the heap for that run, but doesn't stop the next
+# long run from grinding it down the same way, so this batches the
+# actual createDataFrame+write call to bound how much any ONE call has
+# to hold in driver memory at once, independent of chunk size or how
+# long the session has been running.
+WRITE_BATCH_SIZE = 25_000
+
+
 def _write_bronze(dune_rows: list[dict], venue: Venue, ingested_at: datetime) -> int:
     if not dune_rows:
         return 0
@@ -298,13 +316,15 @@ def _write_bronze(dune_rows: list[dict], venue: Venue, ingested_at: datetime) ->
     # officially documented form (name-matched against schema.fields,
     # never positional). Verified 2026-09-15 after this exact ambiguity
     # was caught in the Silver notebook's copy of this pattern.
-    df = spark.createDataFrame(bronze_rows, schema=_BRONZE_SCHEMA)
-    (
-        df.write.format("delta")
-        .mode("append")
-        .option("mergeSchema", "true")
-        .saveAsTable(BRONZE_TABLE)
-    )
+    for start in range(0, len(bronze_rows), WRITE_BATCH_SIZE):
+        batch = bronze_rows[start : start + WRITE_BATCH_SIZE]
+        df = spark.createDataFrame(batch, schema=_BRONZE_SCHEMA)
+        (
+            df.write.format("delta")
+            .mode("append")
+            .option("mergeSchema", "true")
+            .saveAsTable(BRONZE_TABLE)
+        )
     return len(bronze_rows)
 
 

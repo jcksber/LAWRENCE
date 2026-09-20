@@ -1408,3 +1408,32 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   elsewhere in this doc). Not yet re-run for real -- next step is Jack
   re-running so the real status/body tells us whether this is a bad key
   or an execute-permission issue on the newest friend's account.
+
+- **`Java heap space` on the Spark driver during `_write_bronze`, not a
+  Dune issue (2026-09-20).** Full-month run for `pumpdotfun`/
+  `raydium_launchlab` was going fine (real fetches succeeding, e.g. chunk
+  465 wrote 206,846 rows) until chunk 479 (only 119,638 rows) failed with
+  `RESOURCE_EXHAUSTED: Java heap space` inside `spark.createDataFrame`,
+  then chunk 480 immediately after. Row count didn't correlate with the
+  failure (a smaller chunk failed shortly after a bigger one succeeded),
+  pointing at cumulative driver JVM heap pressure across a long-running
+  session (~480 chunks, one JVM the whole time) rather than any single
+  chunk being too large -- likely compounded by the progress table's
+  small-file/metadata bloat flagged earlier (never `OPTIMIZE`'d).
+  Immediate recovery: detach/reattach the compute (fresh heap) + run
+  `OPTIMIZE` on both `lawrence.bronze.dex_trades` and
+  `lawrence.bronze._dune_backfill_progress` before re-running. Failed
+  chunks are logged `"failed"` (not `"success"`), so re-running retries
+  them safely -- costs re-paying Dune credits for those two re-fetches,
+  not a data-loss risk.
+  Structural fix (so a fresh session doesn't just repeat this after
+  another few hundred chunks): `_write_bronze` now writes in
+  `WRITE_BATCH_SIZE = 25,000`-row sub-batches instead of one
+  `spark.createDataFrame` call per chunk (which for pumpdotfun chunks
+  regularly means 100k-200k+ rows, `raw_json` blob included, marshalled
+  through the driver's JVM heap in one shot -- `createDataFrame` on a
+  Python list is a driver-local operation, not distributed). Bounds peak
+  driver memory per call independent of chunk size or how long the
+  session has been running. Return value/behavior unchanged for both
+  call sites (`_write_bronze` itself and the `DuneCreditsExhausted`
+  partial-rows salvage path).
