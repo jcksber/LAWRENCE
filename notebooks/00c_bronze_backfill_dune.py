@@ -303,7 +303,13 @@ _BRONZE_SCHEMA = StructType([
 # actual createDataFrame+write call to bound how much any ONE call has
 # to hold in driver memory at once, independent of chunk size or how
 # long the session has been running.
-WRITE_BATCH_SIZE = 25_000
+# 2026-09-20: dropped from 25_000 -- still hit RESOURCE_EXHAUSTED at
+# that size repeatedly, including right after what should have been a
+# fresh serverless environment. Going much smaller as a more robust
+# mitigation regardless of whatever's actually driving the ceiling
+# (session state we can't fully verify vs. a genuinely tight serverless
+# driver memory limit) -- see docs/decisions.md.
+WRITE_BATCH_SIZE = 5_000
 
 
 def _write_bronze(dune_rows: list[dict], venue: Venue, ingested_at: datetime) -> int:

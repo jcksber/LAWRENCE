@@ -1456,3 +1456,19 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   therefore the fetched rows list, alive longer otherwise), but
   `WRITE_BATCH_SIZE` (previous entry) remains the actual mitigation for
   the JVM-side heap pressure, not this change.
+
+- **`WRITE_BATCH_SIZE` dropped from 25,000 to 5,000 (2026-09-20).**
+  25,000 kept hitting `RESOURCE_EXHAUSTED: Java heap space`, including
+  immediately after what should have been a fresh serverless environment
+  (no classic cluster exists -- `databricks clusters list` returns
+  empty, confirmed this is Serverless compute). Two live possibilities,
+  not fully distinguished: (1) whatever "restart" action was used only
+  restarted the client-side Python kernel, not the server-side Spark
+  Connect JVM Serverless keeps running behind it -- those are decoupled,
+  so a Python-only restart wouldn't actually free driver heap; or (2)
+  25,000 rows (with the `raw_json` blob per row) is still too large for
+  Serverless's actual driver memory ceiling, restart or not. Going much
+  smaller side-steps needing to resolve which one it is -- 5,000 is a
+  cheap, git-tracked, reversible change with no effect on progress-table
+  chunk keys or correctness, just more (smaller) Delta append calls per
+  chunk.
