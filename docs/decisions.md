@@ -1437,3 +1437,22 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   session has been running. Return value/behavior unchanged for both
   call sites (`_write_bronze` itself and the `DuneCreditsExhausted`
   partial-rows salvage path).
+
+- **Fixed the actual crash from the `SparkConnectGrpcException` traceback
+  (2026-09-20): `_log_progress` inside the write-failure handler needed a
+  working Spark session, same as `_write_bronze` -- when the write failed
+  AND that fallback log call also failed (degraded/dead session either
+  way), the second failure was uncaught and took the whole 1500-chunk run
+  down instead of just skipping one chunk. Jack had Databricks' Genie
+  patch this live in the notebook (guarding that `_log_progress` call in
+  a try/except, plus `gc.collect()`/`del dune_rows` cleanup) before I saw
+  it; ported the same guard back into the git-tracked notebook so it
+  doesn't get silently reverted next pull, and applied the identical
+  guard to the fetch-failure path's own `_log_progress` call too (same
+  latent risk, just not hit yet). Note: `gc.collect()` manages CPython's
+  own heap, not the separate JVM driver heap `RESOURCE_EXHAUSTED: Java
+  heap space` actually came from -- `del dune_rows` has real value in the
+  except branch (a caught exception's traceback keeps the frame, and
+  therefore the fetched rows list, alive longer otherwise), but
+  `WRITE_BATCH_SIZE` (previous entry) remains the actual mitigation for
+  the JVM-side heap pressure, not this change.

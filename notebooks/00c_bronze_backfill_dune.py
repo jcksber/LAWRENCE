@@ -51,6 +51,7 @@
 
 # COMMAND ----------
 
+import gc
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -410,7 +411,17 @@ for venue in VENUES:
         except (RuntimeError, TimeoutError) as exc:
             # One chunk failing for another reason shouldn't take down
             # the rest -- log (as retryable, not done) and move on.
-            _log_progress(venue.name, chunk_start_str, chunk_end_str, "failed", 0)
+            # 2026-09-20: _log_progress itself needs a working Spark
+            # session too -- if the session is what's actually degraded,
+            # this call can fail right along with everything else. Guard
+            # it (same reasoning as the write-failure path below, which
+            # is what actually crashed a live run this way) so an
+            # unlogged chunk just gets silently retried next run instead
+            # of taking the whole notebook down.
+            try:
+                _log_progress(venue.name, chunk_start_str, chunk_end_str, "failed", 0)
+            except Exception:
+                pass  # session too degraded to even log -- next run retries it anyway
             print(f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start_str}, {chunk_end_str}) FAILED: {exc}")
             chunk_start = chunk_end
             continue
@@ -419,15 +430,36 @@ for venue in VENUES:
             rows_written = _write_bronze(dune_rows, venue, ingested_at)
         except Exception as exc:
             # Anything at the write layer (a Spark type-inference error,
-            # e.g. the 2026-09-15 CANNOT_MERGE_TYPE incident, or any
-            # other surprise) shouldn't kill the whole run either --
-            # this fetch is already paid for, so log it retryable and
-            # move on rather than losing everything after this point.
-            _log_progress(venue.name, chunk_start_str, chunk_end_str, "failed", 0)
+            # e.g. the 2026-09-15 CANNOT_MERGE_TYPE incident, a driver
+            # heap issue, or any other surprise) shouldn't kill the whole
+            # run either -- this fetch is already paid for, so log it
+            # retryable and move on rather than losing everything after
+            # this point.
+            # 2026-09-20: a live run hit RESOURCE_EXHAUSTED: Java heap
+            # space here, and the fallback _log_progress call below then
+            # ALSO failed (same degraded session, both need Spark) --
+            # uncaught, that second failure took the entire 1500-chunk
+            # run down instead of just skipping this one chunk. Guarded
+            # now: worst case this chunk goes unlogged and gets silently
+            # retried next run, instead of ending the run outright.
+            # gc.collect() + del are real but modest: they free CPython's
+            # OWN heap sooner (notably: a caught exception's traceback
+            # keeps this frame, and therefore `dune_rows`, alive until
+            # `exc` itself goes out of scope, otherwise) -- they do NOT
+            # touch the separate JVM driver heap where the actual
+            # RESOURCE_EXHAUSTED error came from. WRITE_BATCH_SIZE above
+            # is the real mitigation for that; this is just not making it
+            # worse on the Python side while we're in here.
+            gc.collect()
+            try:
+                _log_progress(venue.name, chunk_start_str, chunk_end_str, "failed", 0)
+            except Exception:
+                pass  # session too degraded to even log -- next run retries it anyway
             print(
                 f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start_str}, {chunk_end_str}) "
                 f"WRITE FAILED (fetched {len(dune_rows)} rows, not written): {exc}"
             )
+            del dune_rows
             chunk_start = chunk_end
             continue
 
@@ -435,6 +467,8 @@ for venue in VENUES:
         _log_progress(venue.name, chunk_start_str, chunk_end_str, "success", rows_written)
         completed_success.add(key)
         print(f"[{chunk_n}/{total_chunks}] {venue.name} [{chunk_start_str}, {chunk_end_str}): {rows_written} rows written")
+        del dune_rows
+        gc.collect()
         chunk_start = chunk_end
 
 print(f"\nTotal rows written to {BRONZE_TABLE} (source=dune) this run: {total_rows_written}")
