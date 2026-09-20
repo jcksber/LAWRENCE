@@ -1472,3 +1472,46 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   cheap, git-tracked, reversible change with no effect on progress-table
   chunk keys or correctness, just more (smaller) Delta append calls per
   chunk.
+
+- **Capped `raw_json`/symbol field sizes in `to_bronze_row`
+  (2026-09-20).** Chunk 479 (`pumpdotfun`, 2026-08-31 10:00-11:00) failed
+  with `RESOURCE_EXHAUSTED: Java heap space` identically across every
+  `WRITE_BATCH_SIZE` tried (single unbatched call, 25,000, then 5,000) --
+  row-count-based batching could never explain that, since chunk 465
+  wrote 206,846 rows fine in one unbatched call earlier. Root-caused to
+  `to_bronze_row`'s previously uncapped `json.dumps(dune_row,
+  default=str)` for `raw_json`, plus the dedicated `buy_symbol`/
+  `sell_symbol` columns -- pump.fun-family venues are permissionless
+  token creation, so token names/symbols are fully attacker-controlled,
+  arbitrary-length strings; a single spam/attack token with a
+  pathologically huge symbol in this one hour's data would poison
+  whatever batch it landed in regardless of batch size. Added
+  `MAX_SYMBOL_LEN = 200` / `MAX_RAW_JSON_LEN = 20_000` and a `_cap_str`
+  helper that truncates with a `...[truncated from N chars]` marker,
+  applied to both symbol fields and the raw_json blob. Verified: 21
+  existing `test_dune_client.py` tests unaffected (normal-length test
+  fixtures never hit the cap) plus 3 new tests covering the cap itself,
+  all passing via the sandbox's pytest-shim harness. Not yet confirmed
+  against the real data (Jack running a cheap aggregate `MAX(LENGTH(...))`
+  query on this exact chunk to check) but this is a real, unbounded-input
+  gap independent of whether it's the exact trigger here, and the earlier
+  `WRITE_BATCH_SIZE` reduction (25,000 -> 5,000) stays in place as
+  additional headroom either way.
+
+- **Dropped `mergeSchema="true"` from `_write_bronze`'s write call
+  (2026-09-20).** It made sense before `_BRONZE_SCHEMA` existed (the
+  2026-09-15 `CANNOT_DETERMINE_TYPE` incident), but every batch now
+  writes that exact, unchanging explicit schema -- `mergeSchema` has
+  nothing left to reconcile except `dex_trades`' full transaction
+  history, on every single batch write. Suspect alongside a possibly
+  bloated transaction log: since `WRITE_BATCH_SIZE` batching landed, a
+  single ~120k-row chunk is ~24 separate append transactions instead of
+  1 (at 5,000/batch), and the table hasn't been `OPTIMIZE`'d since well
+  before batching existed -- asked Jack to check `dex_trades`' version
+  count via `DESCRIBE HISTORY` and re-run `OPTIMIZE` regardless of the
+  result. This is a real, concrete mechanism (driver has to open/reconcile
+  against a growing log on every write) independent of any single chunk's
+  row count or content, unlike the two theories already ruled out
+  (batch size: identical failure from single-shot down to 5,000/batch;
+  pathological symbol data: measured max length 13 chars, completely
+  normal).

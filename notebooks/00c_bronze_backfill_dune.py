@@ -329,7 +329,15 @@ def _write_bronze(dune_rows: list[dict], venue: Venue, ingested_at: datetime) ->
         (
             df.write.format("delta")
             .mode("append")
-            .option("mergeSchema", "true")
+            # 2026-09-20: dropped mergeSchema -- it made sense before
+            # _BRONZE_SCHEMA existed (2026-09-15's CANNOT_DETERMINE_TYPE
+            # incident), but every batch now writes that exact, unchanging
+            # explicit schema, so mergeSchema has nothing to actually do
+            # except reconcile against dex_trades' full transaction
+            # history on every single batch call -- pure overhead at this
+            # point, and a real suspect for driver memory pressure that
+            # grows with the table's version count rather than any one
+            # chunk's row count (see docs/decisions.md).
             .saveAsTable(BRONZE_TABLE)
         )
     return len(bronze_rows)

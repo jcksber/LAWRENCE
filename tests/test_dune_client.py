@@ -12,6 +12,8 @@ from unittest.mock import MagicMock, patch
 
 from ingestion.bitquery_client import ChainFamily, Venue
 from ingestion.dune_client import (
+    MAX_RAW_JSON_LEN,
+    MAX_SYMBOL_LEN,
     DuneClient,
     DuneCreditsExhausted,
     DuneVenueFilter,
@@ -367,3 +369,27 @@ def test_fetch_historical_trades_delegates_to_run_sql():
             RAYDIUM_FILTER, "2026-09-01 00:00:00", "2026-09-01 01:00:00"
         )
     assert rows == [{"a": 1}]
+
+def test_to_bronze_row_caps_a_pathologically_long_symbol():
+    # 2026-09-20 (see docs/decisions.md): pump.fun-family venues let
+    # anyone mint a token with an arbitrary-length name/symbol -- a
+    # single such row going into an uncapped raw_json/symbol column was
+    # the suspected cause of a live RESOURCE_EXHAUSTED: Java heap space
+    # write failure that reproduced identically regardless of batch size.
+    evil_row = _solana_row(token_bought_symbol="X" * 50_000)
+    bronze = to_bronze_row(evil_row, RAYDIUM_V4, INGESTED_AT)
+    assert len(bronze["buy_symbol"]) <= MAX_SYMBOL_LEN + 40
+    assert "truncated from 50000 chars" in bronze["buy_symbol"]
+
+
+def test_to_bronze_row_caps_raw_json_without_crashing():
+    evil_row = _solana_row(token_sold_symbol="Y" * 100_000)
+    bronze = to_bronze_row(evil_row, RAYDIUM_V4, INGESTED_AT)
+    assert len(bronze["raw_json"]) <= MAX_RAW_JSON_LEN + 40
+
+
+def test_to_bronze_row_leaves_normal_sized_symbols_untouched():
+    bronze = to_bronze_row(_solana_row(), RAYDIUM_V4, INGESTED_AT)
+    assert bronze["buy_symbol"] == "WSOL"
+    assert "truncated" not in bronze["raw_json"]
+

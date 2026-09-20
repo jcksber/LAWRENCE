@@ -324,6 +324,28 @@ def _to_float(x: Any) -> float | None:
     return None if x is None else float(x)
 
 
+# 2026-09-20 (see docs/decisions.md): pump.fun-family venues let anyone
+# mint a token with an arbitrary-length name/symbol -- permissionless
+# launchpads regularly see spam/attack tokens with pathologically huge
+# metadata strings. A single such row going into `raw_json` (previously
+# an uncapped json.dumps of the entire raw Dune row) or a dedicated
+# symbol column could blow up memory independent of how the surrounding
+# batch is sized -- suspected root cause of a "RESOURCE_EXHAUSTED: Java
+# heap space" write failure that reproduced identically across every
+# batch size tried (25,000 down to 5,000), which row-count-based batching
+# alone could never explain.
+MAX_SYMBOL_LEN = 200
+MAX_RAW_JSON_LEN = 20_000
+
+
+def _cap_str(value: Any, max_len: int) -> Any:
+    """Truncates a string value to max_len, tagging that it was cut --
+    leaves non-strings (including None) untouched."""
+    if isinstance(value, str) and len(value) > max_len:
+        return value[:max_len] + f"...[truncated from {len(value)} chars]"
+    return value
+
+
 def to_bronze_row(
     dune_row: dict[str, Any], venue: Venue, ingested_at: datetime
 ) -> dict[str, Any]:
@@ -356,18 +378,18 @@ def to_bronze_row(
         "tx_hash": tx_hash,
         "dex_protocol": dex_protocol,
         "buy_token_id": buy_token_id,
-        "buy_symbol": dune_row["token_bought_symbol"],
+        "buy_symbol": _cap_str(dune_row["token_bought_symbol"], MAX_SYMBOL_LEN),
         "buy_amount": _to_float(dune_row["token_bought_amount"]),
         "buy_amount_usd": amount_usd,
         "sell_token_id": sell_token_id,
-        "sell_symbol": dune_row["token_sold_symbol"],
+        "sell_symbol": _cap_str(dune_row["token_sold_symbol"], MAX_SYMBOL_LEN),
         "sell_amount": _to_float(dune_row["token_sold_amount"]),
         "sell_amount_usd": amount_usd,
         # KNOWN GAP -- see module docstring. Always None for Dune-sourced
         # rows; live Bitquery rows still carry real fees.
         "tx_fee_native": None,
         "tx_fee_usd": None,
-        "raw_json": json.dumps(dune_row, default=str),
+        "raw_json": _cap_str(json.dumps(dune_row, default=str), MAX_RAW_JSON_LEN),
         "source": "dune",
         "ingested_at": ingested_at,
     }
