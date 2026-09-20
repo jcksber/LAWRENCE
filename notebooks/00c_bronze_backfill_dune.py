@@ -360,6 +360,49 @@ print(f"{len(completed_success)} chunk(s) already completed in a previous run --
 client = DuneClient(api_key=DUNE_API_KEY)
 ingested_at = datetime.now(timezone.utc)
 
+# 2026-09-20 (see docs/decisions.md): a live run hit RESOURCE_EXHAUSTED:
+# Java heap space at the exact same chunk across every re-run, regardless
+# of write batch size (single call, 25,000, 5,000), field-size capping,
+# or dropping mergeSchema -- none of which changed anything, because
+# chunks 1-478 (raydium_v4/uniswap_v3_base/pumpdotfun's already-completed
+# range) all skip BEFORE ever touching Spark, so whatever chunk comes
+# right after that skip run is always the FIRST real write of that
+# session, every single time this notebook gets re-run. Chunk 465
+# (206,846 rows) succeeded earlier in the SAME run as dozens of prior
+# real writes -- not a cold start. This warm-up pays whatever one-time
+# cost a session's first write carries (table/transaction-log metadata
+# load, codegen/JIT compilation, catalog connection setup) against a
+# single throwaway row instead of a 100k+ row chunk, then removes it
+# immediately so it never reaches Silver/Gold.
+_WARMUP_SENTINEL = "__WARMUP_DUMMY_DO_NOT_USE__"
+_write_bronze(
+    [
+        {
+            "chain_family": "solana",
+            "network": None,
+            "dex_venue": "warmup",
+            "block_time": "1970-01-01 00:00:00.000",
+            "tx_id": _WARMUP_SENTINEL,
+            "project": "warmup",
+            "version": 0,
+            "version_name": None,
+            "token_bought_symbol": "WARMUP",
+            "token_sold_symbol": "WARMUP",
+            "token_bought_amount": 0.0,
+            "token_sold_amount": 0.0,
+            "amount_usd": 0.0,
+            "token_bought_mint_address": _WARMUP_SENTINEL,
+            "token_sold_mint_address": _WARMUP_SENTINEL,
+        }
+    ],
+    VENUES[0],
+    ingested_at,
+)
+spark.sql(
+    f"DELETE FROM {BRONZE_TABLE} WHERE tx_hash = '{_WARMUP_SENTINEL}'"
+)
+print("Warm-up write + cleanup done -- proceeding to the real backfill loop.")
+
 # 2026-09-18: each venue now walks ITS OWN window (VENUE_WINDOWS override,
 # defaulting to the shared BACKFILL_WINDOW_START/END) -- restructured from
 # "for each time chunk: for each venue" to "for each venue: for each chunk

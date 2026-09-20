@@ -1515,3 +1515,29 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   (batch size: identical failure from single-shot down to 5,000/batch;
   pathological symbol data: measured max length 13 chars, completely
   normal).
+
+- **Root cause reassessment for the recurring `RESOURCE_EXHAUSTED: Java
+  heap space` failure (2026-09-20), and a warm-up write as the actual
+  fix.** Three write-side changes (single call -> 25,000 -> 5,000-row
+  batches; capping raw_json/symbol fields; dropping mergeSchema) all
+  made zero difference -- same chunk (pumpdotfun, 2026-08-31 10:00-11:00,
+  119,638 rows) failed identically every time. The pattern those three
+  attempts missed: chunks 1-478 (raydium_v4/uniswap_v3_base/pumpdotfun's
+  already-`success` range) all skip before ever touching Spark, so
+  whichever chunk comes right after that skip run is ALWAYS the first
+  real Spark write of that session -- true on every single re-run,
+  independent of any restart. Chunk 465 (206,846 rows, larger than the
+  chunk that's now failing) had succeeded earlier in the SAME run as
+  dozens of prior real writes -- not a cold start. This points at
+  one-time per-session overhead on a table's first write (transaction-
+  log/metadata load, codegen/JIT compilation, catalog connection setup)
+  landing on top of a 100k+ row payload, rather than anything about that
+  payload's own size or content, which is exactly why none of the
+  write-side tuning changed anything -- they all optimize the write
+  itself, not a fixed cost that happens once regardless of payload.
+  Fix: a throwaway single-row warm-up write to `BRONZE_TABLE` (obviously
+  sentinel-tagged `tx_hash`, immediately deleted after) right after
+  `client = DuneClient(...)` and before the main loop, so any first-write
+  tax lands on 1 row instead of 100k+. Verified `to_bronze_row` handles
+  the dummy row correctly (pure Python, testable without Spark); the
+  Spark-side write/delete itself needs a real run to confirm.
