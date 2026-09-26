@@ -94,6 +94,11 @@ _ENTRY_SCHEMA_COLUMNS = [f.name for f in _ENTRY_SCHEMA]
 import pandas as pd
 from pyspark.sql import functions as F
 
+# Silver's trade_time is a TimestampType since 2026-09-22; applyInPandas
+# converts it to tz-naive pandas Timestamps in the SESSION time zone, and
+# gold_features._parse treats naive as UTC -- so pin the session to UTC.
+spark.conf.set("spark.sql.session.timeZone", "UTC")
+
 # Only the columns gold_features.py actually reads (its price_at/
 # trailing_activity_features/build_entry_row/build_exit_rows) -- Silver's
 # _SILVER_SCHEMA (notebooks/01) carries 13 columns total; tx_fee_usd,

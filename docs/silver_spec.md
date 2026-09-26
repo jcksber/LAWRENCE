@@ -12,13 +12,14 @@ overlap so a slow run doesn't lose data) -- so the same trade (`tx_hash`)
 can land in Bronze more than once across runs. That's fine; Silver dedupes,
 not Bronze.
 
-**Dedup key is `(dex_venue, tx_hash, token_id)`, not just `(dex_venue,
-tx_hash)`.** A single trade normally produces one Silver row, but if
-neither side of a swap is a quote asset (two candidate tokens traded
-directly against each other), it produces two -- one per side, each
-treating the other as its quote (see "Why only one side of each trade"
-below). `token_id` is what disambiguates those two rows for the same
-`tx_hash`.
+**Dedup key is `(swap_id, token_id)`** (changed 2026-09-22, see
+`docs/decisions.md`). `swap_id = sha2(concat_ws('|', dex_venue, tx_hash,
+buy_token_id, sell_token_id, buy_amount, sell_amount), 256)`, computed on
+the two-sided Bronze swap. The old key `(dex_venue, tx_hash, token_id)`
+collapsed legitimate multiple swaps of the same token inside one
+transaction (router multi-hops, bundled launch buys) -- ~3.8M real rows in
+the Dune backfill. `token_id` still disambiguates the two rows a
+non-quote/non-quote swap produces.
 
 ## Why only one side of each trade
 
@@ -49,13 +50,14 @@ task that runs right after Bronze each cycle.
 |---|---|
 | `token_id` | traded contract/mint address (the non-quote side) |
 | `chain_family`, `network`, `dex_venue`, `dex_protocol` | carried from Bronze |
-| `trade_time` | from Bronze `block_time` |
+| `trade_time` | `TimestampType`, parsed from Bronze's string `block_time` (two formats: `... UTC` and ISO `...Z`) |
 | `side` | `buy` or `sell`, from the token-of-interest's perspective |
 | `price_usd` | token's price in this trade, normalized regardless of which raw side it was on |
 | `amount_usd` | trade size, for volume/liquidity features |
 | `tx_fee_usd` | total transaction cost in USD, normalized cross-chain -- a proxy for competition/MEV heat at that moment, and needed for realistic backtest cost simulation |
 | `chain_native_fee` | fee in the chain's native currency, as a decimal (SOL for Solana, ETH for EVM) -- **not** raw base units (lamports/wei); kept alongside `tx_fee_usd` for anyone doing chain-specific analysis |
-| `tx_hash` | dedup key, with `dex_venue` |
+| `tx_hash` | source transaction |
+| `swap_id` | content hash of the two-sided swap; dedup key with `token_id` |
 | `quote_token_id` | what it traded against (SOL, USDC, etc.) -- reference only, not modeled |
 
 ## Fee fields — resolved, now live in Bronze

@@ -1541,3 +1541,82 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   tax lands on 1 row instead of 100k+. Verified `to_bronze_row` handles
   the dummy row correctly (pure Python, testable without Spark); the
   Spark-side write/delete itself needs a real run to confirm.
+
+- **Silver rebuild for the 131M-row Bronze backfill: content-based
+  `swap_id` dedup, Spark-native transform, parsed timestamps
+  (2026-09-22).** Bronze now holds ~131M Dune rows (pumpdotfun 108.1M,
+  uniswap_v3_base 10.7M, raydium_v4 8.6M, raydium_launchlab 3.6M) plus
+  7,000 live Bitquery rows per venue. Three findings from profiling it:
+  1. **The old key `(dex_venue, tx_hash, token_id)` deletes real trades.**
+     Measured per venue as `n` vs `COUNT(DISTINCT xxhash64(tx_hash,
+     buy_token_id, sell_token_id, buy_amount, sell_amount))` vs
+     `COUNT(DISTINCT tx_hash)` (Dune rows only):
+     | venue | true dupes | legit extra swaps in same tx |
+     |---|---|---|
+     | raydium_v4 | 36,010 (0.42%) | 413,774 (4.84%) |
+     | pumpdotfun | 1,605,036 (1.48%) | 1,606,503 (1.49%) |
+     | raydium_launchlab | 0 | 9,602 (0.26%) |
+     | uniswap_v3_base | 130,278 (1.22%) | 1,792,904 (16.8%) |
+     True dupes line up with the partial-chunk-salvage + full re-fetch
+     path during the 2026-09-20 heap incidents (launchlab, which ran
+     clean, has zero). Multi-swap-per-tx rows are real: router multi-hops
+     on Base, and bundled launch buys on pump.fun -- likely one of the
+     most predictive launch signals, so collapsing them is not OK.
+     Bronze has no per-swap index (Dune `evt_index` /
+     `outer_instruction_index` were never selected), so the two can only
+     be separated by content.
+     **Decision:** `swap_id = sha2(concat_ws('|', dex_venue, tx_hash,
+     buy_token_id, sell_token_id, buy_amount, sell_amount), 256)`,
+     computed on the two-sided Bronze swap before the per-side explode;
+     dedupe on `swap_id`; Silver key becomes `(swap_id, token_id)`.
+     sha2 not xxhash64 for the persisted key (64-bit collisions are
+     non-negligible at 1e8+ rows; fine for the one-off count above).
+     Accepted cost: two byte-identical swaps in one tx collapse --
+     near-impossible on a bonding curve, since each buy moves price.
+     Follow-up (not now): select `evt_index`/`outer_instruction_index`
+     for future ingestion; not worth re-paying Dune credits to backfill.
+  2. **`block_time` (Bronze) and `trade_time` (Silver) are strings in two
+     formats** -- `YYYY-MM-DD HH:MM:SS.mmm UTC` (Dune rows written before
+     `_normalize_block_time` existed) and `YYYY-MM-DDTHH:MM:SSZ`
+     (everything since). String comparison sorts ' ' before 'T', so any
+     range filter/sort/MIN/MAX on these columns is wrong on days mixing
+     both. **Decision:** Silver parses both into a real `TimestampType`
+     `trade_time`; Bronze is left as-is (not rewriting 131M rows).
+  3. **The existing Silver notebook can't run at this scale** -- it
+     `.collect()`s each Bronze chunk to the driver and transforms row by
+     row in Python (same driver-heap pattern as the Bronze incidents,
+     at ~3-5M rows/day for pumpdotfun). **Decision:** rewrite the
+     transform as native Spark DataFrame ops (per-side select +
+     `unionByName`), backfill Silver with one set-based partitioned
+     overwrite, keep `MERGE` on `(swap_id, token_id)` only for live
+     cadence. `to_silver_rows()` stays as the pure-Python reference
+     implementation the Spark version is parity-tested against.
+  Also noted: live Bitquery ingestion stops at 2026-09-15 04:15 with
+  7,000 rows/venue -- expected, not a bug: the live job's schedule has
+  been PAUSED since 2026-09-15 (`resources/lawrence_job.yml`).
+  Implemented (2026-09-22): `src/features/silver_spark.py`
+  (`build_silver`), `notebooks/01_silver_token_trades.py` rewritten with
+  `MODE = "live" | "rebuild"` (live now windows on Bronze `ingested_at`,
+  a real timestamp, instead of the string `block_time`; old
+  `_catchup_progress` chunking removed -- `lawrence.silver._catchup_progress`
+  is now unused and can be dropped). Downstream: `gold_features._parse`
+  now accepts datetimes as well as strings, and notebooks 02/03 pin
+  `spark.sql.session.timeZone = UTC` (applyInPandas hands naive
+  Timestamps in session tz). Side effect: Gold's
+  `pdf.sort_values("trade_time")` was sorting mixed-format strings
+  lexically before this -- now chronological. Parity tests in
+  `tests/test_silver_spark.py` (skipped where PySpark isn't installed,
+  i.e. CI); not yet run -- PyPI unreachable from the sandbox. Existing
+  gold/silver pure-Python tests pass.
+
+- **Venue-mechanics research before finalizing Silver (2026-09-22)** --
+  full write-up in `docs/venue_mechanics.md`. Headlines: (1) Bronze has
+  launchpad *curve* trades (pumpdotfun, raydium_launchlab) but not the
+  post-graduation venues (PumpSwap, Raydium CPMM), so graduated tokens --
+  the winners -- vanish from our data at the moment they succeed
+  (right-censoring; labels biased toward losers). (2) LaunchLab quote
+  mints are per-pool and, since 2026-09-07, arbitrary (StonkFun pairs
+  against SPYx/ZEC/PreStocks/other launched coins) -- the static quote
+  denylist can't express that; token-of-interest should come from each
+  pool's base mint. (3) raydium_v4 and uniswap_v3_base are not launch
+  venues in 2026. Silver rebuild on hold until these are decided.

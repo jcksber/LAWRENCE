@@ -108,7 +108,7 @@ def winsorize_return(y: Any) -> Any:
 TokenTrades = list[dict[str, Any]]  # must be sorted ascending by trade_time
 
 
-def _parse(ts: str) -> datetime:
+def _parse(ts: str | datetime) -> datetime:
     """Parses a trade_time string. Must handle two real shapes (2026-09-17,
     see docs/decisions.md): the ISO-8601 "...Z"/"...+00:00" shape this
     codebase writes going forward, AND Dune's raw
@@ -122,6 +122,12 @@ def _parse(ts: str) -> datetime:
     comparisons between differently-sourced rows never mix aware/naive --
     every timestamp in this codebase is UTC (see dune_client.py's own
     normalization comment)."""
+    # 2026-09-22: Silver's trade_time is now a real TimestampType, so
+    # applyInPandas hands over pandas Timestamps (a datetime subclass,
+    # tz-naive in UTC since notebooks set spark.sql.session.timeZone=UTC).
+    # Strings still accepted for tests and any pre-rebuild data.
+    if isinstance(ts, datetime):
+        return ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
     s = ts.strip()
     if s.endswith(" UTC"):
         dt = datetime.fromisoformat(s[: -len(" UTC")].replace(" ", "T", 1))
