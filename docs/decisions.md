@@ -1620,3 +1620,33 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   denylist can't express that; token-of-interest should come from each
   pool's base mint. (3) raydium_v4 and uniswap_v3_base are not launch
   venues in 2026. Silver rebuild on hold until these are decided.
+
+- **00e cost-test results, cells 1-2 (2026-09-26).** Cell 1 (1h, Sep 1
+  00:00 UTC): pumpswap 548,986 trades/h, pumpdotfun 177,367, raydium v3
+  (CLMM) 21,072, v4 11,657, v5 (CPMM) 7,566, raydium_launchlab 114.
+  PumpSwap is ~3x the pump.fun curve (~400M trades/month) -- a
+  graduates-only, bounded-horizon filter is mandatory, not an
+  optimization. `raydium` v5 = CPMM confirmed from spellbook
+  (`CPMMoo8L...`). LaunchLab's 114/h on Sep 1 vs ~5k/h Bronze average
+  means most of our LaunchLab rows are post-2026-09-07 (any-pair /
+  StonkFun). Cell 2 (pool metadata, full window) cost ~0.3 credits:
+  PumpSwap pools created in window ~35k (33,124 SOL-quoted, 1,884 USDC,
+  103 PUMP, then a long tail of stock/crypto/pump-token quotes);
+  LaunchLab >=32k pools in the top 30 (platform, quote) groups alone --
+  StonkFun dominates with dozens of quote mints (xStocks, PreStocks,
+  ZEC, DOGE, PUMP, other launched coins), plus letsbonk.fun (SOL, USD1),
+  Raydium's own UI, VOIDEX LaunchLab. Confirms the static quote denylist
+  can't work for LaunchLab; per-pool base/quote metadata is cheap
+  (tens of thousands of rows). ~35k PumpSwap pools/month vs ~4k/month
+  expected pump.fun graduations (0.6%) => most PumpSwap pools are NOT
+  graduates; cell 3's curve-mint join is the filter.
+- **00e cell 3 (2026-09-26), ~4.1 credits:** PumpSwap pools created on
+  2026-09-01: 1,235 traded, 1,209 of them on mints that traded on the
+  pump.fun curve (so the curve-mint join barely filters -- nearly every
+  new PumpSwap pool is for a curve token; correcting cell 2's note: most
+  of the ~35k/month pools ARE curve-token pools, and graduations are far
+  above the ~0.6% cited from the Sep-2025 study). Trades within 72h of
+  pool creation: 11,223,337 for ONE day of pools -> ~336M rows/month,
+  ~260k credits at ~780 credits/M rows. Raw trade-level pull ruled out.
+  Next: cell 5 sizes per-pool OHLCV bars computed on Dune (1m/5m,
+  24h/72h) instead of raw trades.

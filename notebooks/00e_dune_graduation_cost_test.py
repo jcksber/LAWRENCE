@@ -184,7 +184,7 @@ WHERE t.project = 'pumpswap'
 
 # COMMAND ----------
 
-CPMM_VERSION = None  # set from cell 1's output, e.g. 5
+CPMM_VERSION = 5  # confirmed 2026-09-26: raydium v5 = CPMM (CPMMoo8L...), v3 = CLMM, v4 = AMM v4 -- per spellbook raydium_v*_base_trades_backfill.sql
 
 assert CPMM_VERSION is not None, "Set CPMM_VERSION from cell 1 first."
 _run(
@@ -207,6 +207,52 @@ WHERE t.project = 'raydium' AND t.version = {CPMM_VERSION}
   AND t.block_time >= {_ts(SAMPLE_DAY_START)}
   AND t.block_time <  {_ts(SAMPLE_DAY_END + timedelta(hours=GRAD_HORIZON_HOURS))}
   AND t.block_time <  m.first_curve_trade + INTERVAL '{GRAD_HORIZON_HOURS}' HOUR
+""",
+)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Cell 5: size a BAR-level pull instead of raw trades — same 1-day sample
+# MAGIC
+# MAGIC Cell 3 (2026-09-26): one day's PumpSwap pools = 11.2M trades within
+# MAGIC 72h -> ~336M rows/month, ~260k credits at 00c's ~780 credits/M rows.
+# MAGIC Not affordable. Labels only need `price_at(T + HOLD)`, and exit
+# MAGIC features only need price/volume/activity over time, so per-pool
+# MAGIC OHLCV bars computed ON DUNE (only the bars are exported) carry what
+# MAGIC Gold needs at a fraction of the rows. This counts how many bars that
+# MAGIC would be at 1-min and 5-min granularity, for 24h and 72h horizons.
+# MAGIC Same scan as cell 3, so expect a similar credit cost (~4).
+
+# COMMAND ----------
+
+_run(
+    "PumpSwap post-graduation BAR counts, 1-day sample",
+    f"""
+WITH pools AS (
+  SELECT pool, created_at
+  FROM pumpswap_solana.pools
+  WHERE created_at >= {_ts(SAMPLE_DAY_START)}
+    AND created_at <  {_ts(SAMPLE_DAY_END)}
+),
+t AS (
+  SELECT p.pool,
+         t.block_time,
+         t.block_time < p.created_at + INTERVAL '24' HOUR AS within_24h
+  FROM dex_solana.trades t
+  JOIN pools p ON t.project_program_id = p.pool
+  WHERE t.project = 'pumpswap'
+    AND t.block_time >= {_ts(SAMPLE_DAY_START)}
+    AND t.block_time <  {_ts(SAMPLE_DAY_END + timedelta(hours=GRAD_HORIZON_HOURS))}
+    AND t.block_time <  p.created_at + INTERVAL '{GRAD_HORIZON_HOURS}' HOUR
+)
+SELECT
+  COUNT(DISTINCT pool || '|' || CAST(date_trunc('minute', block_time) AS varchar)) AS bars_1m_72h,
+  COUNT(DISTINCT CASE WHEN within_24h THEN pool || '|' || CAST(date_trunc('minute', block_time) AS varchar) END) AS bars_1m_24h,
+  COUNT(DISTINCT pool || '|' || CAST(floor(to_unixtime(block_time) / 300) AS varchar)) AS bars_5m_72h,
+  COUNT(DISTINCT CASE WHEN within_24h THEN pool || '|' || CAST(floor(to_unixtime(block_time) / 300) AS varchar) END) AS bars_5m_24h,
+  COUNT_IF(within_24h) AS trades_24h
+FROM t
 """,
 )
 
