@@ -1650,3 +1650,40 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   ~260k credits at ~780 credits/M rows. Raw trade-level pull ruled out.
   Next: cell 5 sizes per-pool OHLCV bars computed on Dune (1m/5m,
   24h/72h) instead of raw trades.
+- **00e cell 5 (2026-09-26), ~1.8 credits:** same 1-day PumpSwap sample
+  as bars instead of trades. 1m bars: 216,657 (24h) / 286,816 (72h);
+  5m bars: 61,911 (24h) / 87,515 (72h). vs 11.2M raw trades -> 1m bars
+  are ~39x fewer rows. Activity is front-loaded: 95% of 72h trades
+  (10.6M) and 76% of 1m bars fall in the first 24h. Monthly estimates
+  (x30, at 00c's ~780 credits/M rows exported): 1m/72h ~8.6M rows
+  ~6.7k credits; 1m/24h ~6.5M ~5.1k; 5m/72h ~2.6M ~2.0k; 5m/24h ~1.9M
+  ~1.5k; hybrid 1m for 0-24h + 5m for 24-72h ~7.3M ~5.7k. Plus
+  ~2-4 credits scan per day queried. Choice depends on HOLD_MINUTES
+  (still a placeholder in label_spec.md) and available credits.
+- **00e cell 4 (2026-09-26), ~8.6 credits (inferred from balance
+  delta):** LaunchLab mints with curve trades on 2026-08-31/09-01 that
+  then traded on Raydium CPMM (v5) within 72h: 180 mints, 1,624 trades.
+  Tiny -- but 2026-09-01 predates the 09-07 any-pair/StonkFun surge
+  (LaunchLab curve volume is ~40x higher after it), so treat as a lower
+  bound; even 40x is ~2M trades/month. Cost here is the scan (mint-IN
+  join over all CPMM trades), not rows. Plan: same 1m-bar format as
+  PumpSwap, so post-graduation data from both venues lands in one shape.
+
+- **Post-graduation pull: 1-minute bars, 24h horizon (Jack, 2026-09-26).**
+  Chosen from 00e cell 5 (~6.5M rows/month, ~5.1k credits est.) over
+  72h / 5-min / hybrid. Implemented as `notebooks/00f_bronze_postgrad_bars_dune.py`
+  + `src/ingestion/postgrad_bars.py` (pure SQL builders/mappers,
+  `tests/test_postgrad_bars.py`). New Bronze tables:
+  `lawrence.bronze.pool_metadata` (PumpSwap + LaunchLab pools: base/quote
+  mint, platform, created_at) and `lawrence.bronze.postgrad_bars_1m`
+  (per-pool OHLCV in USD of the BASE token, n_trades/n_buys/n_traders,
+  n_unpriced). Bars are aggregated on Dune; trades with no USD price are
+  counted in `n_unpriced`, not dropped silently. PumpSwap chunked 6h by
+  pool creation time (120 chunks) with a progress table
+  (`_postgrad_progress`) for key-swapping resumability; first run is
+  capped at ONE PumpSwap chunk to check real cost vs estimate. CPMM
+  (LaunchLab graduates) is one whole-window query -- small output, but
+  its scan (mint-IN join over all CPMM trades) may cost tens of credits.
+  Silver work still TODO: token-of-interest from pool_metadata base_mint
+  (not the denylist) for LaunchLab, and folding postgrad bars into the
+  per-token price series Gold reads.
