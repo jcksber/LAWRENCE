@@ -1687,3 +1687,20 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   Silver work still TODO: token-of-interest from pool_metadata base_mint
   (not the denylist) for LaunchLab, and folding postgrad bars into the
   per-token price series Gold reads.
+- **00f first run (2026-09-29).** pools_pumpswap 109,296 rows (vs cell
+  2's ~35k -- cell 2 was LIMIT 20 quote-mint groups and cell 3 only
+  counted pools that TRADED; most created pools apparently never trade,
+  to be confirmed by the checks cell), pools_launchlab 49,622,
+  bars_pumpswap first 6h chunk 55,041 bars (00e estimate ~54k -- on
+  target). bars_raydium_cpmm FAILED on DuneClient's 180s poll timeout,
+  not a Dune error -- the execution kept running server-side. Fix:
+  `POLL_TIMEOUT_S = 1800` and `RECOVER_EXECUTION_IDS` (fetch the already-
+  paid execution's results before re-running). Credit delta: 2,245.986
+  -> 2,526.873 = ~281 credits for the whole run (159k metadata rows +
+  55k bars exported, plus the PumpSwap chunk scan and the timed-out CPMM
+  scan, which still billed). Can't split per job from one delta; worst
+  case (all attributed to rows) ~1,300 credits/M rows vs 00c's ~780.
+  Remaining PumpSwap (119 chunks x ~55k bars ~6.5M rows): ~5.6k credits
+  at 780/M + ~4/chunk scan, up to ~9k worst case -- i.e. several
+  free-tier accounts. This account is now past the 2,500 free-tier
+  mark -- confirm it isn't billing pay-as-you-go before running more.

@@ -83,6 +83,21 @@ PROGRESS_TABLE = "lawrence.bronze._postgrad_progress"
 
 WRITE_BATCH_SIZE = 5_000  # same driver-heap reasoning as 00c
 
+# 2026-09-29: first run's bars_raydium_cpmm hit DuneClient's default 180s
+# poll timeout -- the notebook gave up waiting, but the Dune execution
+# itself kept running and was billed. 30 min covers the whole-window CPMM
+# scan and any slow PumpSwap chunk.
+POLL_TIMEOUT_S = 1800
+
+# Executions that already ran on Dune but whose results never reached
+# Bronze (e.g. the poll timeout above). Fetching an existing execution's
+# results re-uses the paid-for scan instead of re-running it. If the
+# fetch fails (results expired, or the execution itself failed), the job
+# falls back to a fresh run_sql. Remove an entry once its job is 'success'.
+RECOVER_EXECUTION_IDS = {
+    "bars_raydium_cpmm": "01M3R8JGTJ99M4XQB0JN56EK71",
+}
+
 # COMMAND ----------
 
 _POOLS_SCHEMA = StructType([
@@ -164,7 +179,7 @@ while _s < BACKFILL_WINDOW_END:
     jobs.append(("bars_pumpswap", _s, _e, pumpswap_bars_sql(_s, _e, HORIZON_HOURS), to_bar_row, _BARS_SCHEMA, BARS_TABLE))
     _s = _e
 
-client = DuneClient(api_key=DUNE_API_KEY)
+client = DuneClient(api_key=DUNE_API_KEY, poll_timeout_s=POLL_TIMEOUT_S)
 ingested_at = datetime.now(timezone.utc)
 pumpswap_run = 0
 total = 0
@@ -182,7 +197,19 @@ for i, (job, start, end, sql, mapper, schema, table) in enumerate(jobs, start=1)
         pumpswap_run += 1
 
     try:
-        dune_rows = client.run_sql(sql)
+        dune_rows = None
+        if job in RECOVER_EXECUTION_IDS:
+            exec_id = RECOVER_EXECUTION_IDS[job]
+            try:
+                client._wait_until_done(exec_id)
+                dune_rows = client._fetch_all_rows(exec_id)
+                print(f"{tag}: recovered {len(dune_rows):,} rows from existing execution {exec_id}")
+            except DuneCreditsExhausted:
+                raise
+            except Exception as rec_exc:
+                print(f"{tag}: could not recover execution {exec_id} ({rec_exc}) -- running fresh")
+        if dune_rows is None:
+            dune_rows = client.run_sql(sql)
     except DuneCreditsExhausted as exc:
         salvaged = _write([mapper(r, ingested_at) for r in exc.partial_rows], schema, table) if exc.partial_rows else 0
         _log_progress(job, *key[1:], "partial", salvaged)
