@@ -31,7 +31,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 sys.path.append("../src")
-from features.silver_spark import build_silver  # noqa: E402
+from features.silver_spark import build_silver, pool_pairs  # noqa: E402
 from features.silver_token_trades import EVM_QUOTE_DENYLIST, SOLANA_QUOTE_DENYLIST  # noqa: E402
 from delta.tables import DeltaTable  # noqa: E402
 from pyspark.sql import functions as F  # noqa: E402
@@ -54,10 +54,18 @@ MODE = "live"
 # late run doesn't lose rows; the MERGE makes the overlap a no-op.
 LOOKBACK_MINUTES = 60
 
+# 2026-10-01: LaunchLab's token-of-interest comes from each pool's base
+# mint (lawrence.bronze.pool_metadata, written by 00f) instead of the quote
+# denylist -- see silver_spark.METADATA_BASE_VENUES. Falls back to the
+# denylist everywhere if the metadata table doesn't exist yet.
+POOL_METADATA_TABLE = "lawrence.bronze.pool_metadata"
+PAIRS = pool_pairs(spark.table(POOL_METADATA_TABLE)) if spark.catalog.tableExists(POOL_METADATA_TABLE) else None
+print("pool metadata:", "loaded" if PAIRS is not None else "NOT FOUND -- denylist only")
+
 # COMMAND ----------
 
 if MODE == "rebuild":
-    silver_df = build_silver(spark.table(BRONZE_TABLE))
+    silver_df = build_silver(spark.table(BRONZE_TABLE), PAIRS)
     (
         silver_df.write.format("delta")
         .mode("overwrite")
@@ -72,7 +80,7 @@ if MODE == "rebuild":
 
 elif MODE == "live":
     since = datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)
-    new_df = build_silver(spark.table(BRONZE_TABLE).filter(F.col("ingested_at") >= F.lit(since)))
+    new_df = build_silver(spark.table(BRONZE_TABLE).filter(F.col("ingested_at") >= F.lit(since)), PAIRS)
     (
         DeltaTable.forName(spark, SILVER_TABLE)
         .alias("t")
@@ -140,3 +148,13 @@ top_quotes = (
     .orderBy("dex_venue", "rank")
 )
 display(top_quotes)
+
+# 4. LaunchLab: with pool metadata, every swap should produce exactly ONE
+#    Silver row (the pool's base). >1 means the metadata didn't match and
+#    the denylist fallback split the swap -- report how many.
+display(
+    silver.filter(F.col("dex_venue") == "raydium_launchlab")
+    .groupBy("swap_id").count()
+    .groupBy(F.col("count").alias("rows_per_swap")).count()
+    .orderBy("rows_per_swap")
+)

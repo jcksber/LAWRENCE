@@ -14,7 +14,7 @@ pyspark = pytest.importorskip("pyspark")
 from pyspark.sql import SparkSession  # noqa: E402
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType  # noqa: E402
 
-from features.silver_spark import build_silver  # noqa: E402
+from features.silver_spark import build_silver, pool_pairs  # noqa: E402
 from features.silver_token_trades import to_silver_rows  # noqa: E402
 
 WSOL = "So11111111111111111111111111111111111111112"
@@ -111,3 +111,23 @@ def test_both_block_time_formats_parse_to_same_instant(spark):
 def test_unknown_block_time_shape_is_null_not_crash(spark):
     out = _build(spark, [_row(block_time="not a time")])
     assert out[0]["trade_time"] is None
+
+
+def test_launchlab_uses_pool_base_mint_not_denylist(spark):
+    # StonkFun coin quoted in ANOTHER launched coin: neither side is on the
+    # denylist, so the denylist rule would emit 2 rows. With pool metadata
+    # it's exactly one row, for the pool's base.
+    row = _row(
+        tx_hash="ll1", dex_venue="raydium_launchlab", dex_protocol="raydium_launchlab_1",
+        buy_token_id="QUOTECOIN", sell_token_id="BASECOIN", sell_amount=10.0,
+    )
+    pools = spark.createDataFrame(
+        [("raydium_launchlab", "pool1", "BASECOIN", "QUOTECOIN")],
+        "venue string, pool_id string, base_mint string, quote_mint string",
+    )
+    bronze = spark.createDataFrame([row], schema=_BRONZE_SCHEMA)
+    with_meta = build_silver(bronze, pool_pairs(pools)).collect()
+    without = build_silver(bronze).collect()
+    assert [r["token_id"] for r in with_meta] == ["BASECOIN"]
+    assert with_meta[0]["quote_token_id"] == "QUOTECOIN"
+    assert len(without) == 2  # old behaviour, for contrast

@@ -78,6 +78,39 @@ def swap_id(df: DataFrame) -> Column:
     return F.sha2(F.concat_ws("|", *parts), 256)
 
 
+# Venues whose token-of-interest comes from pool metadata (each pool's base
+# mint) instead of the quote denylist. LaunchLab only: its quote mint is
+# per-pool and, since 2026-09-07, can be ANY token (StonkFun pairs launches
+# against xStocks, PreStocks, ZEC, other launched coins) -- see
+# docs/venue_mechanics.md. pump.fun keeps the denylist (its quote is always
+# SOL, verified on all 108M Bronze rows).
+METADATA_BASE_VENUES = ["raydium_launchlab"]
+
+
+def _pair_key(a: Column, b: Column) -> Column:
+    """Order-independent key for a mint pair, so a trade (buy=A, sell=B) and
+    a pool (base=B, quote=A) meet in a plain equi-join."""
+    return F.concat_ws("|", F.least(a, b), F.greatest(a, b))
+
+
+def pool_pairs(pool_metadata_df: DataFrame) -> DataFrame:
+    """lawrence.bronze.pool_metadata -> one row per mint pair with its base
+    mint, for METADATA_BASE_VENUES. Pairs whose pools disagree on which side
+    is the base (someone created both A/B and B/A) are dropped as
+    ambiguous; those trades fall back to the denylist rule."""
+    return (
+        pool_metadata_df.filter(F.col("venue").isin(METADATA_BASE_VENUES))
+        .select(
+            _pair_key(F.col("base_mint"), F.col("quote_mint")).alias("pair_key"),
+            F.col("base_mint"),
+        )
+        .groupBy("pair_key")
+        .agg(F.collect_set("base_mint").alias("bases"))
+        .filter(F.size("bases") == 1)
+        .select("pair_key", F.col("bases")[0].alias("pool_base_mint"))
+    )
+
+
 def _is_quote(token_col: str) -> Column:
     """NULL for an unknown chain_family -> those rows are dropped by the
     side filters below (pure-Python version raises instead)."""
@@ -122,16 +155,36 @@ def _side(df: DataFrame, side: str, quote_side: str) -> DataFrame:
     )
 
 
-def build_silver(bronze_df: DataFrame) -> DataFrame:
+def build_silver(bronze_df: DataFrame, pool_pairs_df: DataFrame | None = None) -> DataFrame:
     """Bronze two-sided swaps -> Silver one-row-per-(swap, token-of-interest).
 
-    0 rows for a quote/quote swap, 1 for the common token/quote case, 2 when
-    neither side is a quote asset -- identical rule to to_silver_rows()."""
+    Default (denylist) rule, identical to to_silver_rows(): 0 rows for a
+    quote/quote swap, 1 for the common token/quote case, 2 when neither side
+    is a quote asset.
+
+    With `pool_pairs_df` (from `pool_pairs()`), trades on METADATA_BASE_VENUES
+    whose mint pair matches a known pool use that pool's base mint as the
+    token-of-interest -- exactly one row per swap, whatever the quote is.
+    Unmatched/ambiguous pairs fall back to the denylist rule."""
     swaps = (
         bronze_df.withColumn("swap_id", swap_id(bronze_df))
         .dropDuplicates(["swap_id"])
         .withColumn("trade_time", parse_block_time(F.col("block_time")))
-        .withColumn("buy_is_quote", _is_quote("buy_token_id"))
-        .withColumn("sell_is_quote", _is_quote("sell_token_id"))
     )
+    if pool_pairs_df is not None:
+        swaps = swaps.withColumn(
+            "pair_key", _pair_key(F.col("buy_token_id"), F.col("sell_token_id"))
+        ).join(F.broadcast(pool_pairs_df), on="pair_key", how="left")
+        use_meta = F.col("dex_venue").isin(METADATA_BASE_VENUES) & F.col("pool_base_mint").isNotNull()
+        swaps = swaps.withColumn(
+            "buy_is_quote",
+            F.when(use_meta, F.col("buy_token_id") != F.col("pool_base_mint")).otherwise(_is_quote("buy_token_id")),
+        ).withColumn(
+            "sell_is_quote",
+            F.when(use_meta, F.col("sell_token_id") != F.col("pool_base_mint")).otherwise(_is_quote("sell_token_id")),
+        )
+    else:
+        swaps = swaps.withColumn("buy_is_quote", _is_quote("buy_token_id")).withColumn(
+            "sell_is_quote", _is_quote("sell_token_id")
+        )
     return _side(swaps, "buy", "sell").unionByName(_side(swaps, "sell", "buy")).select(*SILVER_COLUMNS)

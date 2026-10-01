@@ -99,3 +99,33 @@ has a usable on-chain transaction fee (confirmed 2026-09-15, see
 Anything downstream computing on these two Silver columns should expect
 nulls for `dune`-sourced rows and handle them accordingly, not assume every
 row has real fee data.
+
+## LaunchLab token-of-interest from pool metadata (2026-10-01)
+
+`build_silver(bronze_df, pool_pairs_df)`: for `raydium_launchlab` trades,
+the token-of-interest is the base mint of the pool whose (unordered) mint
+pair matches the trade, from `lawrence.bronze.pool_metadata` (00f). Exactly
+one row per swap whatever the quote is -- needed because LaunchLab quotes
+can be any token, including another launched coin. Unmatched or ambiguous
+pairs (pools that disagree on which side is base) fall back to the denylist
+rule. pump.fun and the AMM venues keep the denylist.
+
+# `lawrence.silver.token_price_1m` (2026-10-01)
+
+One 1-minute price series per token -- what Gold reads. Built by
+`notebooks/01b_silver_token_price_1m.py` from `silver.token_trades` +
+`bronze.postgrad_bars_1m` + `bronze.pool_metadata`; logic in
+`src/features/silver_price_bars.py`.
+
+| column | notes |
+|---|---|
+| `token_id`, `bar_start`, `trade_date` | key: one row per token per minute |
+| `price_unit` | `usd` if >= 95% of the token's trades are USD-priced, else `quote` -- fixed per token so returns are never computed across units |
+| `quote_token_id` | the token's primary quote (LaunchLab pool quote if known, else most-traded quote); in `quote` mode prices are in these units and rows quoted in anything else are excluded |
+| `open`, `high`, `low`, `close` | price in `price_unit` |
+| `volume_usd`, `volume_quote` | volume_quote only counts the primary quote |
+| `n_trades`, `n_buys`, `n_traders` | n_traders only on post-grad bars (Bronze trades carry no trader id) |
+| `phase` | `curve` (pump.fun / LaunchLab bonding curve), `postgrad` (PumpSwap / CPMM after graduation), `amm` (raydium_v4, uniswap_v3_base) |
+| `venue`, `pool_id` | pool_id only for post-grad bars (canonical = busiest pool per token) |
+
+Same-minute collisions (graduation minute) keep the bar with more trades.

@@ -1744,3 +1744,42 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
     a token can trade against several quotes (e.g. SOL and USDC PumpSwap
     pools, ~3 PumpSwap pools per mint), so quote-unit prices must come
     from ONE quote per token -- likely its canonical/launch pool.
+- **00f complete (2026-10-01).** pool_metadata: PumpSwap 109,296 pools /
+  35,283 base mints; LaunchLab 49,622 pools = 49,622 mints.
+  postgrad_bars_1m: PumpSwap 5,992,096 bars over 35,119 pools covering
+  308.7M trades (3.72% USD-unpriced); CPMM v2 418,593 bars / 1,984
+  pools / 5.2M trades, quote-unit price missing on only 0.21% of bars
+  (vs 62% USD-unpriced) -- the quote-price fix works.
+  Observations: (1) PumpSwap pools that actually traded (35,119) ~= the
+  number of distinct base mints (35,283) -> ~1 traded pool per token;
+  the other ~74k created pools never traded. Canonical-pool selection
+  is nearly free: the pool with trades. (2) PumpSwap bars have NO
+  quote-unit prices (bars_missing_quote_price = 1.0) even though the
+  committed SQL produces them -- CONFIRMED from the final run's log:
+  all 120 PumpSwap chunks were already 'success' (fetched by the
+  pre-quote-price version of 00f) and were skipped; that run only did
+  bars_raydium_cpmm_v2. Impact is limited to the 3.72% of PumpSwap
+  trades without a USD price; re-pulling all PumpSwap (~2.7k credits)
+  for that is not worth it now -- revisit only if those tokens matter. (3) Progress shows 1 `partial` PumpSwap chunk
+  (30,000 rows) later re-fetched as success: success rows 5,962,096 +
+  30,000 partial = 5,992,096 bars, i.e. ~30k duplicate bars in Bronze,
+  removed by Silver's (venue, pool_id, bar_start) dedup.
+
+- **Silver v2: pool-metadata base mints + one price series per token
+  (2026-10-01, Jack approved).**
+  1. `silver_spark.build_silver(bronze, pool_pairs(pool_metadata))`:
+     LaunchLab token-of-interest = matching pool's base mint (pair-key
+     equi-join, broadcast ~49k rows); denylist fallback when unmatched or
+     ambiguous. Notebook 01 loads pool_metadata automatically and reports
+     LaunchLab rows-per-swap (should be all 1).
+  2. New `lawrence.silver.token_price_1m` (`src/features/silver_price_bars.py`,
+     notebook `01b_silver_token_price_1m.py`): trade bars (curve/amm) +
+     canonical post-grad bars (busiest pool per base mint; duplicate bars
+     from the partial chunk removed by newest ingested_at). Per-token
+     `price_unit` = usd if >=95% USD coverage else quote-units of the
+     primary quote (launch pool quote, else most-traded quote); other-quote
+     rows excluded, never mixed. This is the table Gold will move onto,
+     replacing the price_usd IS NOT NULL stopgap.
+  Tests: tests/test_silver_price_bars.py + a LaunchLab case in
+  tests/test_silver_spark.py -- Spark-only, not run yet (no PyPI in the
+  sandbox); first real run is in Databricks.
