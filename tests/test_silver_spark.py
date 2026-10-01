@@ -131,3 +131,13 @@ def test_launchlab_uses_pool_base_mint_not_denylist(spark):
     assert [r["token_id"] for r in with_meta] == ["BASECOIN"]
     assert with_meta[0]["quote_token_id"] == "QUOTECOIN"
     assert len(without) == 2  # old behaviour, for contrast
+
+
+def test_string_typed_bronze_amounts_are_cast(spark):
+    # The real Bronze table stores amounts as STRING (Bitquery decimals).
+    from pyspark.sql.types import StringType, StructField, StructType
+    str_schema = StructType([StructField(f.name, StringType()) for f in _BRONZE_SCHEMA.fields])
+    r = {k: (None if v is None else str(v)) for k, v in _row().items()}
+    out = build_silver(spark.createDataFrame([r], schema=str_schema)).collect()
+    assert len(out) == 1
+    assert abs(out[0]["price_usd"] - 50.0 / 1_000_000.0) < 1e-12

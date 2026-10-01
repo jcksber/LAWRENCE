@@ -1783,3 +1783,11 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   Tests: tests/test_silver_price_bars.py + a LaunchLab case in
   tests/test_silver_spark.py -- Spark-only, not run yet (no PyPI in the
   sandbox); first real run is in Databricks.
+- **First Silver rebuild failed: Bronze amounts are STRING (2026-10-01).**
+  `DATATYPE_MISMATCH.BINARY_OP_WRONG_TYPE` on `buy_amount_usd / buy_amount`.
+  The real `bronze.dex_trades` stores buy/sell amounts, *_usd and fee
+  columns as STRING (first writes were Bitquery, whose GraphQL decimals
+  are JSON strings). The old Python path float()-ed everything, which hid
+  it. Fix: `build_silver` try_casts those six columns to DOUBLE right after
+  computing swap_id (hash still sees the stored text); added a parity test
+  with an all-string Bronze schema.

@@ -155,6 +155,16 @@ def _side(df: DataFrame, side: str, quote_side: str) -> DataFrame:
     )
 
 
+_NUMERIC_BRONZE_COLUMNS = [
+    "buy_amount",
+    "buy_amount_usd",
+    "sell_amount",
+    "sell_amount_usd",
+    "tx_fee_native",
+    "tx_fee_usd",
+]
+
+
 def build_silver(bronze_df: DataFrame, pool_pairs_df: DataFrame | None = None) -> DataFrame:
     """Bronze two-sided swaps -> Silver one-row-per-(swap, token-of-interest).
 
@@ -171,6 +181,17 @@ def build_silver(bronze_df: DataFrame, pool_pairs_df: DataFrame | None = None) -
         .dropDuplicates(["swap_id"])
         .withColumn("trade_time", parse_block_time(F.col("block_time")))
     )
+    # 2026-10-01: Bronze's numeric columns are STRING in the real table --
+    # the first rows came from Bitquery, whose GraphQL returns decimals as
+    # JSON strings, and that fixed the table's column types. The old
+    # row-by-row path hid this (to_silver_rows float()s everything); Spark
+    # arithmetic on strings fails with DATATYPE_MISMATCH. Cast AFTER
+    # swap_id so the hash still sees the exact stored text. try_cast, not
+    # cast: an unparseable value becomes NULL (row then handled by the
+    # normal NULL rules) instead of failing the whole rebuild under ANSI.
+    for c in _NUMERIC_BRONZE_COLUMNS:
+        if c in swaps.columns:
+            swaps = swaps.withColumn(c, F.expr(f"try_cast({c} AS DOUBLE)"))
     if pool_pairs_df is not None:
         swaps = swaps.withColumn(
             "pair_key", _pair_key(F.col("buy_token_id"), F.col("sell_token_id"))
