@@ -31,6 +31,17 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 sys.path.append("../src")
+# Force-reload our own modules: Python caches an import for the life of the
+# notebook session, so after `bundle sync` a re-run would otherwise keep
+# using the OLD code (2026-10-01: the string-cast fix "didn't work" for
+# exactly this reason).
+import importlib  # noqa: E402
+
+import features.silver_spark  # noqa: E402
+import features.silver_token_trades  # noqa: E402
+
+importlib.reload(features.silver_token_trades)
+importlib.reload(features.silver_spark)
 from features.silver_spark import build_silver, pool_pairs  # noqa: E402
 from features.silver_token_trades import EVM_QUOTE_DENYLIST, SOLANA_QUOTE_DENYLIST  # noqa: E402
 from delta.tables import DeltaTable  # noqa: E402

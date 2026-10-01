@@ -17,6 +17,12 @@
 import sys
 
 sys.path.append("../src")
+# Force-reload (same reason as notebook 01): don't run stale cached code.
+import importlib  # noqa: E402
+
+import features.silver_price_bars  # noqa: E402
+
+importlib.reload(features.silver_price_bars)
 from features.silver_price_bars import USD_COVERAGE_MIN, build_token_price_1m  # noqa: E402
 from pyspark.sql import functions as F  # noqa: E402
 

@@ -1791,3 +1791,8 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   it. Fix: `build_silver` try_casts those six columns to DOUBLE right after
   computing swap_id (hash still sees the stored text); added a parity test
   with an all-string Bronze schema.
+- **"Fix didn't work" was a stale import (2026-10-01).** Re-running cells
+  in the same Databricks session reuses the already-imported module, so
+  the synced string-cast fix never executed. Notebooks 01/01b now
+  `importlib.reload` our src modules on every run; otherwise restart
+  Python after a `bundle sync`.
