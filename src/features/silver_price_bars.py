@@ -121,8 +121,11 @@ def trade_bars(trades_df: DataFrame, units_df: DataFrame) -> DataFrame:
     price = F.when(F.col("price_unit") == "usd", F.col("price_usd")).otherwise(
         F.when(F.col("quote_token_id") == F.col("primary_quote"), F.col("price_quote"))
     )
+    # 2026-10-01: prices <= 0 are treated as missing. 01b's first run found
+    # 306,057 bars with close <= 0 -- Dune reports amount_usd = 0 on dust
+    # trades, so price_usd = 0 -- and a zero price breaks every return.
     t = (
-        t.withColumn("_price", price)
+        t.withColumn("_price", F.when(price > 0, price))
         .filter(F.col("_price").isNotNull())
         .withColumn("bar_start", F.date_trunc("minute", "trade_time"))
     )
@@ -157,7 +160,21 @@ def postgrad_bars(canon_bars_df: DataFrame, units_df: DataFrame) -> DataFrame:
     same_quote = F.col("quote_mint") == F.col("primary_quote")
 
     def pick(usd_col: str, q_col: str):
-        return F.when(is_usd, F.col(usd_col)).otherwise(F.when(same_quote, F.col(q_col)))
+        v = F.when(is_usd, F.col(usd_col)).otherwise(F.when(same_quote, F.col(q_col)))
+        return F.when(v > 0, v)  # <= 0 -> missing, same rule as trade_bars
+
+    b = b.select(
+        "*",
+        pick("open_usd", "open_q").alias("_o"),
+        pick("high_usd", "high_q").alias("_h"),
+        pick("low_usd", "low_q").alias("_l"),
+        pick("close_usd", "close_q").alias("_c"),
+    )
+    # If a zero-priced dust trade knocked out open/high/low but close is
+    # valid, fall back to close-based values rather than drop the bar.
+    o = F.coalesce("_o", "_c")
+    h = F.coalesce("_h", F.greatest(o, F.col("_c")))
+    lo = F.coalesce("_l", F.least(o, F.col("_c")))
 
     return (
         b.select(
@@ -165,10 +182,10 @@ def postgrad_bars(canon_bars_df: DataFrame, units_df: DataFrame) -> DataFrame:
             "bar_start",
             "price_unit",
             F.col("primary_quote").alias("quote_token_id"),
-            pick("open_usd", "open_q").alias("open"),
-            pick("high_usd", "high_q").alias("high"),
-            pick("low_usd", "low_q").alias("low"),
-            pick("close_usd", "close_q").alias("close"),
+            o.alias("open"),
+            h.alias("high"),
+            lo.alias("low"),
+            F.col("_c").alias("close"),
             "volume_usd",
             F.when(same_quote, F.col("volume_quote")).alias("volume_quote"),
             "n_trades",

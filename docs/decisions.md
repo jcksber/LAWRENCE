@@ -1796,3 +1796,30 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   the synced string-cast fix never executed. Notebooks 01/01b now
   `importlib.reload` our src modules on every run; otherwise restart
   Python after a `bundle sync`.
+- **Silver rebuild succeeded (2026-10-01).** token_trades: pumpdotfun
+  106,479,158 rows / 1,164,480 tokens; raydium_launchlab 3,625,514 /
+  49,551; raydium_v4 3,465,186 / 48,278; uniswap_v3_base 9,409,517 /
+  15,342. trade_time now a real timestamp (min/max chronological; v4 and
+  Base run to 2026-09-15 04:15 = the paused live Bitquery rows).
+  pumpdotfun ~= Bronze's 106.5M distinct swaps (the ~1.6M partial-retry
+  dupes are gone). LaunchLab: every swap -> exactly 1 row (3,625,514 x 1),
+  i.e. pool-metadata base mint resolved them all; previously most rows
+  were split in two or dropped for missing USD. Quote check now shows
+  non-denylist LaunchLab quotes (ZEC, SPYx, OpenAI PreStock, ...) as
+  expected -- they are quotes, correctly. uniswap_v3_base grew 7.28M ->
+  9.41M (multi-swap txs and USD-unpriced rows no longer dropped).
+  (Graduation-rate note corrected by 01b below: ~1.5%, not ~3%.)
+- **01b first run (2026-10-01): token_price_1m built.** By unit/phase
+  (bars / tokens / trades): usd curve 7.71M / 1,175,670 / 103.6M; usd
+  postgrad 4.64M / 30,546 / 251.2M; usd amm 2.59M / 61,214 / 10.2M; quote
+  curve 393,738 / 25,924 / 5.80M; quote postgrad 246,601 / 651 / 3.17M;
+  quote amm 1.05M / 2,405 / 1.49M. Tokens by phase: curve+postgrad
+  18,626 (graduates we can now follow), curve-only 1,182,968, postgrad-
+  only 12,571, amm-only 63,614. Graduation ~= 18,626 / ~1.2M curve tokens
+  ~= 1.5% (understated: late-window launches had no time to graduate);
+  the earlier "~3%" estimate (35k PumpSwap pools / 1.16M tokens) was
+  wrong. Issues: (1) 306,057 bars with close <= 0 -- Dune amount_usd = 0
+  on dust trades; fixed in silver_price_bars (price <= 0 -> missing; OHLC
+  fall back to close), re-run 01b only. (2) 12,571 postgrad-only tokens --
+  either launched before 2026-08-14 (window edge) or non-pump.fun tokens
+  with PumpSwap pools; diagnostic query (pump-suffix / first-3-days) pending.

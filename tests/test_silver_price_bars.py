@@ -88,3 +88,11 @@ def test_unpriced_stonkfun_token_uses_launch_quote_units_only(spark):
     rows = sorted(_run(spark, trades, bars, pools), key=lambda r: r.bar_start)
     assert all(r.price_unit == "quote" and r.quote_token_id == SPYX for r in rows)
     assert [r.close for r in rows] == [0.6, 0.9]  # the ZEC-quoted minute is dropped, not mixed in
+
+
+def test_zero_prices_are_missing_not_zero(spark):
+    trades = [_trade("PUMP2", 0, 1, 0.0, None, WSOL), _trade("PUMP2", 0, 2, 2.0, None, WSOL)]
+    bars = [_bar("PUMP2", "p", 5, 0.0, None, WSOL), _bar("PUMP2", "p", 6, 3.0, None, WSOL)]
+    rows = sorted(_run(spark, trades, bars, []), key=lambda r: r.bar_start)
+    assert all(r.close > 0 and r.low > 0 for r in rows)
+    assert [r.close for r in rows] == [2.0, 3.0]  # the all-zero bar at minute 5 is dropped
