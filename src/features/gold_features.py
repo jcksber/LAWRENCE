@@ -36,9 +36,26 @@ Scope (v1, per docs/label_spec.md and docs/decisions.md):
   quietly excluding these rows would otherwise create (exactly what
   docs/game_plan.md's SS2 warns backtests lie about). Swap for real
   pull-event detection once Bronze ingests pool-liquidity state.
+
+2026-10-01 -- Gold v2 input (see docs/decisions.md): records are now
+1-minute BARS from `lawrence.silver.token_price_1m`, not raw trades. Each
+record carries `trade_time` (= bar_start + 1 minute, i.e. when the bar's
+close is known -- point-in-time safe), `price` (the bar close, in the
+token's single `price_unit`), `amount_usd`, and `n_trades` / `n_buys`
+(how many trades / buys the bar summarizes). Raw-trade records (no
+n_trades, `price_usd` instead of `price`) still work, so existing tests and
+callers are unchanged. Two v2 behaviours:
+- CENSORING vs RUG: post-graduation bars only cover 24h after the pool is
+  created and the backfill ends 2026-09-13, so "no price at T+hold" can
+  mean "past the end of what we pulled", not "rugged". Callers pass each
+  token's `observed_until`; any T with T+hold beyond it is skipped (a
+  censored label), never clamped to RUG_CLAMP_RETURN. Before v2, graduated
+  tokens vanished at graduation and were silently labelled as rugs.
+- New features: `minutes_since_launch` and `is_postgrad_at_t`.
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -136,6 +153,24 @@ def _parse(ts: str | datetime) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
+def _price(rec: dict[str, Any]) -> float | None:
+    """v2 bar records carry `price` (in the token's price_unit); v1 raw
+    trades carry `price_usd`."""
+    v = rec.get("price", rec.get("price_usd"))
+    return None if _missing(v) else float(v)
+
+
+def _missing(v: Any) -> bool:
+    """None, or a float NaN -- applyInPandas turns NULL doubles into NaN,
+    and `NaN or 0.0` is still NaN, so a plain truthiness check isn't enough."""
+    return v is None or (isinstance(v, float) and math.isnan(v))
+
+
+def _n(rec: dict[str, Any], key: str, default: int) -> int:
+    v = rec.get(key)
+    return default if _missing(v) else int(v)
+
+
 def _count_at_or_before(trades: TokenTrades, t: datetime) -> int:
     """Binary search: how many trades have trade_time <= t. Requires
     `trades` sorted ascending by trade_time (see TokenTrades) -- that's
@@ -181,8 +216,8 @@ def price_at(
     best = trades[idx]
     if t - _parse(best["trade_time"]) > max_staleness:
         return None
-    price = float(best["price_usd"])
-    if price <= 0:
+    price = _price(best)
+    if price is None or price <= 0:
         return None
     return price
 
@@ -199,14 +234,19 @@ def trailing_activity_features(
     if not windowed:
         return None
 
-    buy_count = sum(1 for tr in windowed if tr["side"] == "buy")
-    sell_count = sum(1 for tr in windowed if tr["side"] == "sell")
-    first_price = float(windowed[0]["price_usd"])
-    last_price = float(windowed[-1]["price_usd"])
+    # A raw trade counts as 1 trade (a buy if side == "buy"); a v2 bar
+    # counts as its n_trades / n_buys.
+    trade_count = sum(_n(tr, "n_trades", 1) for tr in windowed)
+    buy_count = sum(_n(tr, "n_buys", 1 if tr.get("side") == "buy" else 0) for tr in windowed)
+    sell_count = trade_count - buy_count
+    first_price = _price(windowed[0])
+    last_price = _price(windowed[-1])
 
     return {
-        "trailing_volume_usd": sum(float(tr["amount_usd"]) for tr in windowed),
-        "trailing_trade_count": len(windowed),
+        "trailing_volume_usd": sum(
+            0.0 if _missing(tr.get("amount_usd")) else float(tr["amount_usd"]) for tr in windowed
+        ),
+        "trailing_trade_count": trade_count,
         "trailing_buy_count": buy_count,
         "trailing_sell_count": sell_count,
         # Laplace-smoothed so an all-buy or all-sell window gives a large
@@ -221,11 +261,27 @@ def trailing_activity_features(
 def _meta(trades: TokenTrades) -> dict[str, Any]:
     ref = trades[-1]
     return {
-        "chain_family": ref["chain_family"],
+        "chain_family": ref.get("chain_family"),
         "network": ref.get("network"),
-        "dex_venue": ref["dex_venue"],
-        "dex_protocol": ref["dex_protocol"],
+        "dex_venue": ref.get("dex_venue"),
+        "dex_protocol": ref.get("dex_protocol"),
     }
+
+
+def _v2_features(trades: TokenTrades, t: datetime, launch_time: Any) -> dict[str, Any]:
+    """minutes_since_launch and is_postgrad_at_t (None when unknown)."""
+    idx = _count_at_or_before(trades, t) - 1
+    phase = trades[idx].get("phase") if idx >= 0 else None
+    return {
+        "minutes_since_launch": (
+            (t - _parse(launch_time)).total_seconds() / 60 if launch_time is not None else None
+        ),
+        "is_postgrad_at_t": None if phase is None else phase == "postgrad",
+    }
+
+
+def _censored(t: datetime, hold_minutes: int, observed_until: Any) -> bool:
+    return observed_until is not None and t + timedelta(minutes=hold_minutes) > _parse(observed_until)
 
 
 def build_entry_row(
@@ -234,12 +290,18 @@ def build_entry_row(
     trades: TokenTrades,
     *,
     hold_minutes: int = HOLD_MINUTES,
+    observed_until: Any = None,
+    launch_time: Any = None,
 ) -> dict[str, Any] | None:
     """One lawrence.gold.entry_candidates row for (token_id, t), or None if
     there's no real price/feature anchor at T itself (genuine data gap --
     still dropped). If T has a real price but nothing trades near
     T+hold_minutes, the row is KEPT with a clamped loss label instead of
-    being dropped -- see module docstring's interim rug-clamping note."""
+    being dropped -- see module docstring's interim rug-clamping note.
+    If T+hold_minutes is past `observed_until`, the label is censored and
+    the row is skipped (v2, see module docstring)."""
+    if _censored(t, hold_minutes, observed_until):
+        return None
     price_t = price_at(trades, t)
     if price_t is None:
         return None
@@ -265,6 +327,7 @@ def build_entry_row(
         "y_entry": y_entry,
         "is_rug_clamped": is_rug_clamped,
         **features,
+        **_v2_features(trades, t, launch_time),
     }
 
 
@@ -275,12 +338,16 @@ def build_exit_rows(
     *,
     hold_minutes: int = HOLD_MINUTES,
     simulated_holds: list[timedelta] = EXIT_SIMULATED_HOLDS,
+    observed_until: Any = None,
+    launch_time: Any = None,
 ) -> list[dict[str, Any]]:
     """0+ lawrence.gold.exit_candidates rows for (token_id, t) -- one per
     simulated holding duration h in `simulated_holds` for which a synthetic
     entry price is available. See docs/label_spec.md's "Exit label:
     training data via simulated entries" -- h is sampled independently of
-    entry-model logic, by design."""
+    entry-model logic, by design. Censored T (see build_entry_row) -> []."""
+    if _censored(t, hold_minutes, observed_until):
+        return []
     price_t = price_at(trades, t)
     if price_t is None:
         return []
@@ -317,6 +384,7 @@ def build_exit_rows(
                 "y_exit": y_exit,
                 "is_rug_clamped": is_rug_clamped,
                 **features,
+                **_v2_features(trades, t, launch_time),
             }
         )
     return rows

@@ -47,11 +47,28 @@
 import sys
 
 sys.path.append("../src")
+# Force-reload our modules each run (stale-import lesson, 2026-10-01).
+import importlib  # noqa: E402
+
+import features.gold_features  # noqa: E402
+import features.gold_input  # noqa: E402
+
+importlib.reload(features.gold_features)
+importlib.reload(features.gold_input)
 from features.gold_features import build_entry_row, sample_assessment_times  # noqa: E402
+from features.gold_input import GOLD_INPUT_COLUMNS, gold_input  # noqa: E402
 
 # COMMAND ----------
 
-SILVER_TABLE = "lawrence.silver.token_trades"
+# 2026-10-01 (Gold v2): read the per-token 1-minute price series, not raw
+# trades -- see src/features/gold_input.py for the candidate/censoring rules.
+from datetime import datetime, timezone  # noqa: E402
+
+PRICE_TABLE = "lawrence.silver.token_price_1m"
+SILVER_TABLE = PRICE_TABLE  # kept so the diagnostics below read the same table
+# End of the bonding-curve backfill (00c's BACKFILL_WINDOW_END): a curve-only
+# token is unobserved after this, so labels reaching past it are censored.
+CURVE_DATA_END = datetime(2026, 9, 13, tzinfo=timezone.utc)
 GOLD_TABLE = "lawrence.gold.entry_candidates"
 
 # COMMAND ----------
@@ -86,6 +103,10 @@ _ENTRY_SCHEMA = StructType([
     StructField("trailing_sell_count", IntegerType()),
     StructField("trailing_buy_sell_ratio", DoubleType()),
     StructField("trailing_price_change_pct", DoubleType()),
+    # Gold v2 (2026-10-01)
+    StructField("price_unit", StringType()),
+    StructField("minutes_since_launch", DoubleType()),
+    StructField("is_postgrad_at_t", BooleanType()),
 ])
 _ENTRY_SCHEMA_COLUMNS = [f.name for f in _ENTRY_SCHEMA]
 
@@ -106,17 +127,7 @@ spark.conf.set("spark.sql.session.timeZone", "UTC")
 # tx_hash alone is a long string on every one of 10M+ rows, so trimming
 # this before the groupBy shuffle cuts real memory/network cost for every
 # token, not just the outliers identified in docs/decisions.md.
-_GOLD_COLUMNS = [
-    "token_id",
-    "chain_family",
-    "network",
-    "dex_venue",
-    "dex_protocol",
-    "trade_time",
-    "side",
-    "price_usd",
-    "amount_usd",
-]
+_GOLD_COLUMNS = GOLD_INPUT_COLUMNS
 
 
 # 2026-09-17 (see docs/decisions.md): a UDF_PYSPARK_ERROR.OOM crashed the
@@ -162,9 +173,14 @@ def _process_token_group(pdf: pd.DataFrame) -> pd.DataFrame:
         # vanish quietly.
         return pd.DataFrame(columns=_ENTRY_SCHEMA_COLUMNS)
     out_rows = []
+    ref = trades[0]
     for t in sample_assessment_times(trades):
-        row = build_entry_row(token_id, t, trades)
+        row = build_entry_row(
+            token_id, t, trades,
+            observed_until=ref["observed_until"], launch_time=ref["launch_time"],
+        )
         if row is not None:
+            row["price_unit"] = ref["price_unit"]
             out_rows.append(row)
 
     if not out_rows:
@@ -177,34 +193,28 @@ def _process_token_group(pdf: pd.DataFrame) -> pd.DataFrame:
 # applyInPandas so its output is visible in this notebook's cell output,
 # unlike print() inside _process_token_group (executor logs only). Also
 # how to tell whether _MAX_TRADES_PER_TOKEN actually needs tuning.
+_gold_input_df = gold_input(spark.table(PRICE_TABLE), CURVE_DATA_END).select(*GOLD_INPUT_COLUMNS)
+
 _top_tokens = (
-    spark.table(SILVER_TABLE)
+    _gold_input_df
     .groupBy("token_id")
     .count()
     .orderBy(F.desc("count"))
     .limit(10)
     .collect()
 )
-print("Top 10 tokens by trade count:")
+print("Top 10 tokens by number of 1-minute bars:")
 for _r in _top_tokens:
     _flag = " <- EXCEEDS _MAX_TRADES_PER_TOKEN, will be skipped" if _r["count"] > _MAX_TRADES_PER_TOKEN else ""
-    print(f"  {_r['token_id']}: {_r['count']:,} trades{_flag}")
+    print(f"  {_r['token_id']}: {_r['count']:,} bars{_flag}")
 
 # 2026-09-17 (see docs/decisions.md): real distinct-token count before the
 # write, so the post-write comparison below can actually prove nothing
 # vanished silently -- not just "the job didn't crash."
-_silver_token_count = spark.table(SILVER_TABLE).select("token_id").distinct().count()
+_silver_token_count = _gold_input_df.select("token_id").distinct().count()  # entry candidates (tokens with a curve phase)
 
 gold_df = (
-    spark.table(SILVER_TABLE)
-    # 2026-09-30: Silver now keeps rows with price_usd = NULL (quote-unit
-    # price only). gold_features.py still assumes a USD price on every
-    # trade, so keep exactly the old behaviour until Gold is taught to use
-    # price_quote (open design question -- a token can trade against
-    # several quotes, so quote-unit prices must not be mixed within one
-    # token's series). See docs/decisions.md.
-    .filter(F.col("price_usd").isNotNull())
-    .select(*_GOLD_COLUMNS)
+    _gold_input_df
     .groupBy("token_id")
     .applyInPandas(_process_token_group, schema=_ENTRY_SCHEMA)
 )

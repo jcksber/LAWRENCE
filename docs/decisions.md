@@ -1823,3 +1823,25 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   fall back to close), re-run 01b only. (2) 12,571 postgrad-only tokens --
   either launched before 2026-08-14 (window edge) or non-pump.fun tokens
   with PumpSwap pools; diagnostic query (pump-suffix / first-3-days) pending.
+- **01b re-run (2026-10-01):** nonpositive_close = 0 after the fix.
+  Postgrad-only tokens = 13,950 (up from 12,571: tokens whose curve
+  trades were all zero-priced lost their curve bars). Breakdown: 12,721
+  pump-suffix (11,579 not in the first 3 days and WITH trades in
+  token_trades -> most likely older pre-2025 pump.fun graduates trading
+  on raydium_v4 plus a newer PumpSwap pool), ~1.2k non-pump mints.
+  **Gold rule (decided): entry candidates = tokens with a `curve` phase in
+  token_price_1m** (we saw them launch). Postgrad-only and amm-only tokens
+  are excluded from the entry model whatever the cause.
+- **Gold v2: built on token_price_1m (2026-10-01).** `src/features/gold_input.py`
+  (candidates = curve-phase tokens; bar records with trade_time =
+  bar_start + 1min; per-token observed_until and launch_time) feeding
+  `gold_features.py`, which now accepts bars (n_trades/n_buys, `price`)
+  as well as raw trades, skips censored labels (T + hold past
+  observed_until) instead of rug-clamping them, treats pandas NaN as
+  missing, and adds minutes_since_launch / is_postgrad_at_t. Notebooks
+  02/03 rewired (and force-reload modules); schemas gain price_unit,
+  minutes_since_launch, is_postgrad_at_t. Key correction this fixes: v1
+  labelled every graduated token's post-graduation window as a rug (-100%)
+  because its trades stopped at graduation. 29 gold_features tests pass.
+  Model feature list unchanged for now -- adding the new columns is a
+  separate, measured step.

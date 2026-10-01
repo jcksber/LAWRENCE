@@ -250,3 +250,61 @@ def test_winsorize_return_works_on_a_pandas_series():
     y = pd.Series([0.5, 16_693_038_859.0, -1.0, -500.0])
     result = winsorize_return(y)
     assert result.tolist() == [0.5, RETURN_WINSORIZE_CAP, -1.0, -RETURN_WINSORIZE_CAP]
+
+
+# ---- v2 (2026-10-01): bar records from silver.token_price_1m ----
+
+def _bar(minutes_offset, price, n_trades=10, n_buys=6, volume_usd=100.0, phase="curve"):
+    return {
+        "trade_time": T0 + timedelta(minutes=minutes_offset),
+        "price": price,
+        "amount_usd": volume_usd,
+        "n_trades": n_trades,
+        "n_buys": n_buys,
+        "phase": phase,
+        "chain_family": "solana",
+        "network": None,
+        "dex_venue": "pumpdotfun",
+        "dex_protocol": None,
+    }
+
+
+def test_bar_records_count_their_trades_not_rows():
+    bars = [_bar(1, 1.0, n_trades=10, n_buys=6), _bar(2, 2.0, n_trades=4, n_buys=1, volume_usd=None)]
+    f = trailing_activity_features(bars, T0 + timedelta(minutes=2))
+    assert f["trailing_trade_count"] == 14
+    assert f["trailing_buy_count"] == 7
+    assert f["trailing_sell_count"] == 7
+    assert f["trailing_volume_usd"] == 100.0  # None volume (quote-unit token) counts as 0
+    assert f["trailing_price_change_pct"] == 1.0
+
+
+def test_censored_label_is_skipped_not_rug_clamped():
+    # No bar near T+60 because our data ENDS (observed_until), not because
+    # the token died: must be skipped, never clamped to -100%.
+    bars = [_bar(m, 1.0) for m in range(0, 30)]
+    t = T0 + timedelta(minutes=29)
+    assert build_entry_row("TOK", t, bars, observed_until=T0 + timedelta(minutes=60)) is None
+    assert build_exit_rows("TOK", t, bars, observed_until=T0 + timedelta(minutes=60)) == []
+    # Same data with no censoring bound -> the old rug-clamp behaviour.
+    row = build_entry_row("TOK", t, bars)
+    assert row["is_rug_clamped"] and row["y_entry"] == RUG_CLAMP_RETURN
+
+
+def test_graduated_token_gets_real_label_from_postgrad_bars():
+    bars = [_bar(m, 1.0) for m in range(0, 10)] + [_bar(m, 3.0, phase="postgrad") for m in range(10, 120)]
+    t = T0 + timedelta(minutes=9)
+    row = build_entry_row(
+        "TOK", t, bars, observed_until=T0 + timedelta(hours=24), launch_time=T0
+    )
+    assert row["y_entry"] == 2.0 and row["is_rug_clamped"] is False
+    assert row["minutes_since_launch"] == 9.0
+    assert row["is_postgrad_at_t"] is False
+    later = build_entry_row("TOK", T0 + timedelta(minutes=30), bars, observed_until=T0 + timedelta(hours=24))
+    assert later["is_postgrad_at_t"] is True
+
+
+def test_nan_volume_from_pandas_counts_as_zero():
+    bars = [_bar(1, 1.0, volume_usd=float("nan")), _bar(2, 1.0, volume_usd=50.0)]
+    f = trailing_activity_features(bars, T0 + timedelta(minutes=2))
+    assert f["trailing_volume_usd"] == 50.0

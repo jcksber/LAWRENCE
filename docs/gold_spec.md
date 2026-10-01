@@ -97,3 +97,25 @@ feature window *and* a real trade near `T + HOLD_MINUTES`, and
 `build_exit_rows` additionally needs a synthetic entry price further back
 still. That's expected given how little history has been ingested so far,
 not a bug — re-run after Bronze/Silver have accumulated more.
+
+## Gold v2 input (2026-10-01)
+
+Gold now reads `lawrence.silver.token_price_1m` (one 1-minute series per
+token, single price unit) through `src/features/gold_input.py`, instead of
+raw `silver.token_trades`:
+
+- **Candidates** = tokens with a `curve` phase (launch observed). Postgrad-
+  only and amm-only tokens are excluded.
+- **Records** are bars: `trade_time = bar_start + 1 min` (close known only
+  once the minute ends), `price = close`, `n_trades`/`n_buys` drive the
+  trailing counts.
+- **Censoring, not rug-clamping**: each token has an `observed_until`
+  (first post-grad bar + 24h for graduates; end of the curve backfill,
+  2026-09-13, otherwise). Any T with T + HOLD_MINUTES past it is skipped.
+  Before v2, a graduated token's trades stopped at graduation, so its
+  post-graduation labels were rug-clamped to -100% -- the opposite of what
+  happened.
+- **New columns** on both Gold tables: `price_unit`, `minutes_since_launch`,
+  `is_postgrad_at_t`. Not yet in the model's feature list.
+- `dex_venue` = launch venue (pumpdotfun / raydium_launchlab);
+  `dex_protocol` is NULL (no single protocol across curve + post-grad).
