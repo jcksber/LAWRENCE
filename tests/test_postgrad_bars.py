@@ -80,10 +80,13 @@ def test_to_bar_row_all_unpriced_minute_keeps_nulls():
             "bar_start": "2026-09-01 00:01:00.000 UTC",
             "open_usd": None, "high_usd": None, "low_usd": None, "close_usd": None,
             "volume_usd": None, "n_trades": 4, "n_buys": 1, "n_traders": 3, "n_unpriced": 4,
+            "open_q": 0.002, "high_q": 0.003, "low_q": 0.002, "close_q": 0.003, "volume_quote": 12,
         },
         INGESTED,
     )
     assert row["close_usd"] is None and row["n_unpriced"] == 4
+    # quote-unit prices survive when USD doesn't
+    assert row["close_q"] == 0.003 and isinstance(row["volume_quote"], float)
 
 
 def test_to_pool_row():
@@ -93,3 +96,14 @@ def test_to_pool_row():
         INGESTED,
     )
     assert row["created_at"] == datetime(2026, 9, 1, 0, 0, 5, tzinfo=timezone.utc)
+
+
+def test_quote_unit_price_columns_in_both_sqls():
+    for sql in (pumpswap_bars_sql(T0, T1), cpmm_launchlab_bars_sql(T0, T1)):
+        assert "AS price_q" in sql
+        assert "AS quote_amount" in sql
+        assert "max_by(price_q, order_key) FILTER (WHERE price_q IS NOT NULL) AS close_q" in sql
+        assert "sum(quote_amount) AS volume_quote" in sql
+    # quote-per-base: the OTHER side's amount over the base side's amount
+    ps = pumpswap_bars_sql(T0, T1)
+    assert "WHEN t.token_bought_mint_address = p.baseMint THEN t.token_sold_amount / NULLIF(t.token_bought_amount, 0)" in ps

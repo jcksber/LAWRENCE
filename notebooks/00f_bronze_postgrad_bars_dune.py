@@ -94,9 +94,17 @@ POLL_TIMEOUT_S = 1800
 # results re-uses the paid-for scan instead of re-running it. If the
 # fetch fails (results expired, or the execution itself failed), the job
 # falls back to a fresh run_sql. Remove an entry once its job is 'success'.
-RECOVER_EXECUTION_IDS = {
-    "bars_raydium_cpmm": "01M3R8JGTJ99M4XQB0JN56EK71",
-}
+# (Emptied 2026-09-30: that execution belonged to the previous Dune
+# account; a different account's key can't read it, so it was re-run.)
+RECOVER_EXECUTION_IDS: dict[str, str] = {}
+
+# Jobs whose venue's existing rows must be DELETED before writing, because
+# the job replaces an earlier pull rather than adding to it.
+# bars_raydium_cpmm_v2 (2026-09-30) re-pulls CPMM with quote-unit prices;
+# v1 rows (USD-only, 62% unpriced) are removed first so there's exactly one
+# copy per bar. Note the progress key changed ("_v2"), so v1's 'success'
+# row doesn't cause this to be skipped.
+REPLACES_VENUE = {"bars_raydium_cpmm_v2": "raydium_cpmm"}
 
 # COMMAND ----------
 
@@ -122,6 +130,13 @@ _BARS_SCHEMA = StructType([
     StructField("low_usd", DoubleType()),
     StructField("close_usd", DoubleType()),
     StructField("volume_usd", DoubleType()),
+    # 2026-09-30: price in QUOTE-token units (quote_amount / base_amount) --
+    # exists for every trade, unlike USD. See postgrad_bars._bars_select.
+    StructField("open_q", DoubleType()),
+    StructField("high_q", DoubleType()),
+    StructField("low_q", DoubleType()),
+    StructField("close_q", DoubleType()),
+    StructField("volume_quote", DoubleType()),
     StructField("n_trades", LongType()),
     StructField("n_buys", LongType()),
     StructField("n_traders", LongType()),
@@ -156,6 +171,21 @@ def _log_progress(job: str, chunk_start: str, chunk_end: str, status: str, rows_
         print(f"    (could not log progress for {job} {chunk_start}: {exc})")
 
 
+# 2026-09-30 schema change: bars tables written before quote-unit prices
+# existed lack the *_q / volume_quote columns. Add them (nullable) so
+# appends with the new schema don't fail. Rows already written keep NULLs
+# there -- fine for PumpSwap (0% USD-unpriced); CPMM is re-pulled (v2).
+if spark.catalog.tableExists(BARS_TABLE):
+    _existing = set(spark.table(BARS_TABLE).columns)
+    _missing = [f for f in _BARS_SCHEMA.fields if f.name not in _existing]
+    if _missing:
+        spark.sql(
+            f"ALTER TABLE {BARS_TABLE} ADD COLUMNS ("
+            + ", ".join(f"{f.name} {f.dataType.simpleString()}" for f in _missing)
+            + ")"
+        )
+        print(f"Added columns to {BARS_TABLE}: {[f.name for f in _missing]}")
+
 done: set[tuple[str, str, str]] = set()
 if spark.catalog.tableExists(PROGRESS_TABLE):
     for r in spark.table(PROGRESS_TABLE).filter("status = 'success'").collect():
@@ -170,7 +200,7 @@ jobs = [
      pumpswap_pools_sql(BACKFILL_WINDOW_START, BACKFILL_WINDOW_END), to_pool_row, _POOLS_SCHEMA, POOLS_TABLE),
     ("pools_launchlab", BACKFILL_WINDOW_START, BACKFILL_WINDOW_END,
      launchlab_pools_sql(BACKFILL_WINDOW_START, BACKFILL_WINDOW_END), to_pool_row, _POOLS_SCHEMA, POOLS_TABLE),
-    ("bars_raydium_cpmm", BACKFILL_WINDOW_START, BACKFILL_WINDOW_END,
+    ("bars_raydium_cpmm_v2", BACKFILL_WINDOW_START, BACKFILL_WINDOW_END,
      cpmm_launchlab_bars_sql(BACKFILL_WINDOW_START, BACKFILL_WINDOW_END, HORIZON_HOURS), to_bar_row, _BARS_SCHEMA, BARS_TABLE),
 ]
 _s, _n = BACKFILL_WINDOW_START, 0
@@ -211,6 +241,8 @@ for i, (job, start, end, sql, mapper, schema, table) in enumerate(jobs, start=1)
         if dune_rows is None:
             dune_rows = client.run_sql(sql)
     except DuneCreditsExhausted as exc:
+        if exc.partial_rows and job in REPLACES_VENUE:
+            spark.sql(f"DELETE FROM {table} WHERE venue = '{REPLACES_VENUE[job]}'")
         salvaged = _write([mapper(r, ingested_at) for r in exc.partial_rows], schema, table) if exc.partial_rows else 0
         _log_progress(job, *key[1:], "partial", salvaged)
         print(f"{tag}: OUT OF CREDITS after {salvaged} rows -- salvaged, logged 'partial'. Swap dune_api_key and re-run.")
@@ -221,6 +253,9 @@ for i, (job, start, end, sql, mapper, schema, table) in enumerate(jobs, start=1)
         continue
 
     try:
+        if job in REPLACES_VENUE:
+            spark.sql(f"DELETE FROM {table} WHERE venue = '{REPLACES_VENUE[job]}'")
+            print(f"{tag}: deleted previous '{REPLACES_VENUE[job]}' rows before replacing them")
         n = _write([mapper(r, ingested_at) for r in dune_rows], schema, table)
     except Exception as exc:
         _log_progress(job, *key[1:], "failed", 0)
@@ -254,6 +289,7 @@ if spark.catalog.tableExists(BARS_TABLE):
         SELECT venue, COUNT(*) AS n_bars, COUNT(DISTINCT pool_id) AS n_pools,
                SUM(n_trades) AS n_trades, SUM(n_unpriced) AS n_unpriced,
                ROUND(SUM(n_unpriced) / SUM(n_trades), 4) AS unpriced_share,
+               ROUND(AVG(CASE WHEN close_q IS NULL THEN 1.0 ELSE 0.0 END), 4) AS bars_missing_quote_price,
                MIN(bar_start) AS min_bar, MAX(bar_start) AS max_bar
         FROM {BARS_TABLE} GROUP BY venue ORDER BY venue"""))
 

@@ -1704,3 +1704,43 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   at 780/M + ~4/chunk scan, up to ~9k worst case -- i.e. several
   free-tier accounts. This account is now past the 2,500 free-tier
   mark -- confirm it isn't billing pay-as-you-go before running more.
+- **00f runs 2-3 (2026-09-30, fresh Dune key).** Run with
+  MAX_PUMPSWAP_CHUNKS=0: 0 credits. Run with =1: 0 -> 810.2 credits.
+  Progress table now: pools_pumpswap success (109,296), pools_launchlab
+  success (49,622), bars_raydium_cpmm failed x2 then success (418,593
+  bars), bars_pumpswap success x2 (91,656 bars total; chunk 2 = 36,615).
+  Which run did the CPMM fetch (recovered vs fresh) is not yet
+  attributed -- needed before the 810 can be read as a per-chunk cost.
+  Checks: pool_metadata pumpswap 109,296 pools / 35,283 distinct base
+  mints (~3 pools per mint -- many duplicate/competing pools per token),
+  launchlab 49,622 pools = 49,622 mints. Bars: pumpswap 503 pools,
+  2.84M trades, 0 unpriced (SOL/USDC quotes, all priced). raydium_cpmm
+  (LaunchLab graduates) 1,984 pools, 5.20M trades, **62% unpriced**
+  (3.22M) -- Dune has no USD price for most StonkFun quote assets, so
+  amount_usd is NULL. Same issue silently affects existing Bronze
+  LaunchLab curve rows (Silver drops amount_usd-NULL rows).
+- **Per-chunk PumpSwap cost measured (2026-09-30):** two chunks fetched
+  alone (05:53 run) moved the key 810.2 -> 855.5 = ~22.7 credits/chunk
+  (~43k bars each, ~530 credits/M rows). Remaining 116 chunks ~2.6k
+  credits. The 810 before it was ~all the fresh whole-month CPMM query
+  (~790: scan + 419k bars).
+- **Keep trades Dune can't price in USD, via quote-unit prices (Jack,
+  2026-09-30).** Labels are relative returns, so price in quote-token
+  units (quote_amount / base_amount) is sufficient over a short hold and
+  exists for every trade. Caveat: a volatile quote (another memecoin)
+  mixes its own moves into the return -- to be flagged by quote type.
+  Implemented:
+  - Bars: `open_q/high_q/low_q/close_q/volume_quote` added to both bar
+    SQLs + schema; existing bars table gets the columns via ALTER TABLE
+    (the 4 PumpSwap chunks already pulled keep NULLs there -- fine, 0%
+    USD-unpriced). CPMM re-pulled as job `bars_raydium_cpmm_v2`, which
+    deletes the v1 `raydium_cpmm` rows first (~790 credits again).
+  - Silver (`to_silver_rows` + `build_silver`): new `price_quote` and
+    `quote_amount` columns; a row is dropped only if NEITHER price_usd
+    nor price_quote is computable (previously any NULL amount_usd dropped
+    it). Tests updated (reference + parity).
+  - Gold notebooks 02/03 filter `price_usd IS NOT NULL` to keep current
+    behaviour until Gold is designed to use price_quote. Open question:
+    a token can trade against several quotes (e.g. SOL and USDC PumpSwap
+    pools, ~3 PumpSwap pools per mint), so quote-unit prices must come
+    from ONE quote per token -- likely its canonical/launch pool.

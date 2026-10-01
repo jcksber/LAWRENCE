@@ -95,15 +95,29 @@ def test_zero_amount_side_is_skipped_not_a_zero_division_error():
     assert to_silver_rows(row) == []
 
 
-def test_null_amount_usd_is_skipped_not_a_type_error():
+def test_null_amount_usd_keeps_row_with_quote_price():
     # Dune-backfilled rows can have a null amount_usd for illiquid/exotic
-    # tokens their price oracle didn't cover (confirmed on real sampled
-    # Base/Uniswap rows, 2026-09-15) -- amount is real but amount_usd is
-    # None, so price_usd = amount_usd / amount would raise TypeError if
-    # not guarded.
+    # tokens its price oracle doesn't cover (Base/Uniswap 2026-09-15;
+    # StonkFun quotes 2026-09-30). Since 2026-09-30 the row is KEPT with
+    # price_usd=None and a quote-unit price instead of being dropped.
     row = _bronze_row(
         sell_token_id="SomeMintAddressForARealToken111111111111111",
         sell_amount_usd=None,
+    )
+    rows = to_silver_rows(row)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["price_usd"] is None
+    # quote-per-token = the other side's amount / this side's amount
+    assert r["price_quote"] == float(row["buy_amount"]) / float(row["sell_amount"])
+    assert r["quote_amount"] == float(row["buy_amount"])
+
+
+def test_no_usd_and_no_quote_amount_is_dropped():
+    row = _bronze_row(
+        sell_token_id="SomeMintAddressForARealToken111111111111111",
+        sell_amount_usd=None,
+        buy_amount=None,
     )
     assert to_silver_rows(row) == []
 

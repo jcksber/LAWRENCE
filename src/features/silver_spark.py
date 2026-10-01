@@ -32,7 +32,9 @@ SILVER_COLUMNS = [
     "trade_date",
     "side",
     "price_usd",
+    "price_quote",
     "amount_usd",
+    "quote_amount",
     "tx_fee_usd",
     "chain_native_fee",
     "tx_hash",
@@ -88,11 +90,17 @@ def _is_quote(token_col: str) -> Column:
 def _side(df: DataFrame, side: str, quote_side: str) -> DataFrame:
     amount = F.col(f"{side}_amount")
     amount_usd = F.col(f"{side}_amount_usd")
+    quote_amount = F.col(f"{quote_side}_amount")
+    # 2026-09-30: price_usd and price_quote computed separately; a row is
+    # kept if EITHER exists (Dune can't USD-price many exotic quotes).
+    # Same rule as to_silver_rows().
+    price_usd = F.when(amount_usd.isNotNull(), amount_usd / amount)
+    price_quote = F.when(quote_amount.isNotNull() & (quote_amount != 0), quote_amount / amount)
     return df.filter(
         (F.col(f"{side}_is_quote") == F.lit(False))
         & amount.isNotNull()
         & (amount != 0)
-        & amount_usd.isNotNull()
+        & (amount_usd.isNotNull() | (quote_amount.isNotNull() & (quote_amount != 0)))
     ).select(
         F.col(f"{side}_token_id").alias("token_id"),
         "chain_family",
@@ -102,8 +110,10 @@ def _side(df: DataFrame, side: str, quote_side: str) -> DataFrame:
         "trade_time",
         F.to_date("trade_time").alias("trade_date"),
         F.lit(side).alias("side"),
-        (amount_usd / amount).alias("price_usd"),
+        price_usd.alias("price_usd"),
+        price_quote.alias("price_quote"),
         amount_usd.alias("amount_usd"),
+        quote_amount.alias("quote_amount"),
         F.col("tx_fee_usd").cast("double").alias("tx_fee_usd"),
         F.col("tx_fee_native").cast("double").alias("chain_native_fee"),
         "tx_hash",

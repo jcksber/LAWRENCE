@@ -52,8 +52,10 @@ task that runs right after Bronze each cycle.
 | `chain_family`, `network`, `dex_venue`, `dex_protocol` | carried from Bronze |
 | `trade_time` | `TimestampType`, parsed from Bronze's string `block_time` (two formats: `... UTC` and ISO `...Z`) |
 | `side` | `buy` or `sell`, from the token-of-interest's perspective |
-| `price_usd` | token's price in this trade, normalized regardless of which raw side it was on |
-| `amount_usd` | trade size, for volume/liquidity features |
+| `price_usd` | token's USD price in this trade, normalized regardless of which raw side it was on; NULL when Dune has no USD price |
+| `price_quote` | token's price in QUOTE-token units (`quote_amount / amount`); present even when Dune can't USD-price the trade (added 2026-09-30) |
+| `amount_usd` | trade size, for volume/liquidity features; NULL when Dune has no USD price (row kept if `price_quote` exists) |
+| `quote_amount` | amount of the quote token on the other side of the trade |
 | `tx_fee_usd` | total transaction cost in USD, normalized cross-chain -- a proxy for competition/MEV heat at that moment, and needed for realistic backtest cost simulation |
 | `chain_native_fee` | fee in the chain's native currency, as a decimal (SOL for Solana, ETH for EVM) -- **not** raw base units (lamports/wei); kept alongside `tx_fee_usd` for anyone doing chain-specific analysis |
 | `tx_hash` | source transaction |

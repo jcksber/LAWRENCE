@@ -81,12 +81,21 @@ def to_silver_rows(bronze_row: dict[str, Any]) -> list[dict[str, Any]]:
     for side, quote_side in sides:
         amount = _to_float(bronze_row[f"{side}_amount"])
         amount_usd = _to_float(bronze_row[f"{side}_amount_usd"])
-        # None or 0.0 amount -- can't compute a price. None amount_usd --
-        # no USD price for this token at all (Dune-backfilled rows can
-        # have this for illiquid/exotic tokens their price oracle misses;
-        # live Bitquery rows haven't shown it, but don't assume forever).
-        # Either way, skip rather than crash on `amount_usd / amount`.
-        if not amount or amount_usd is None:
+        quote_amount = _to_float(bronze_row[f"{quote_side}_amount"])
+        # None or 0.0 amount -- no price of any kind is computable; skip.
+        if not amount:
+            continue
+        # 2026-09-30: USD price and quote-unit price are separate. Dune has
+        # no USD price for many exotic quotes (StonkFun's xStocks,
+        # PreStocks, other launched coins -- 62% of LaunchLab-graduate CPMM
+        # trades), so amount_usd is None there; previously the whole row was
+        # dropped. price_quote (quote tokens per 1 token-of-interest) exists
+        # whenever both amounts do, and labels are relative returns, so it
+        # keeps those trades usable. A row is only dropped when NEITHER
+        # price can be computed.
+        price_usd = amount_usd / amount if amount_usd is not None else None
+        price_quote = quote_amount / amount if quote_amount else None
+        if price_usd is None and price_quote is None:
             continue
         rows.append(
             {
@@ -97,8 +106,10 @@ def to_silver_rows(bronze_row: dict[str, Any]) -> list[dict[str, Any]]:
                 "dex_protocol": bronze_row["dex_protocol"],
                 "trade_time": bronze_row["block_time"],
                 "side": side,
-                "price_usd": amount_usd / amount,
+                "price_usd": price_usd,
+                "price_quote": price_quote,
                 "amount_usd": amount_usd,
+                "quote_amount": quote_amount,
                 "tx_fee_usd": tx_fee_usd,
                 "chain_native_fee": chain_native_fee,
                 "tx_hash": bronze_row["tx_hash"],

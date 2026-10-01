@@ -62,7 +62,9 @@ def _build(spark, rows):
 
 
 def _key(r):
-    return (r["tx_hash"], r["token_id"], r["side"], round(r["price_usd"], 9))
+    def _r(x):
+        return None if x is None else round(x, 9)
+    return (r["tx_hash"], r["token_id"], r["side"], _r(r["price_usd"]), _r(r["price_quote"]))
 
 
 def test_parity_with_reference(spark):
@@ -71,7 +73,8 @@ def test_parity_with_reference(spark):
         _row(tx_hash="tx2", buy_token_id=WSOL, sell_token_id=USDC_SOL),  # quote/quote -> 0
         _row(tx_hash="tx3", sell_token_id="OTHERmint222", sell_amount=10.0),  # neither quote -> 2
         _row(tx_hash="tx4", buy_amount=0.0),  # zero amount on token side -> 0
-        _row(tx_hash="tx5", buy_amount_usd=None),  # no USD price -> 0
+        _row(tx_hash="tx5", buy_amount_usd=None),  # no USD price -> kept, quote price only
+        _row(tx_hash="tx6", buy_amount_usd=None, sell_amount=None),  # no price at all -> 0
         _row(  # EVM, mixed-case quote address must still match denylist
             tx_hash="0xabc", chain_family="evm", network="base", dex_venue="uniswap_v3_base",
             dex_protocol="uniswap_v3", buy_token_id="0xTOKEN", sell_token_id=WETH_BASE.upper().replace("0X", "0x"),

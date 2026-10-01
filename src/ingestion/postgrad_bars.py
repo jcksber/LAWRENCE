@@ -45,7 +45,15 @@ def _ts(dt: datetime) -> str:
 
 def _bars_select(venue_label: str) -> str:
     """Shared aggregation over a CTE `x` with columns: pool_id, base_mint,
-    quote_mint, block_time, order_key, price, amount_usd, is_buy, trader_id."""
+    quote_mint, block_time, order_key, price, price_q, quote_amount,
+    amount_usd, is_buy, trader_id.
+
+    `price` is the base token's USD price (NULL when Dune can't price
+    either side); `price_q` is its price in QUOTE-token units
+    (quote_amount / base_amount), which exists for every trade. Labels are
+    relative returns, so `*_q` columns keep trades Dune can't price in USD
+    (62% of LaunchLab-graduate CPMM trades, 2026-09-30) -- see
+    docs/decisions.md."""
     return f"""
 SELECT
   '{venue_label}' AS venue,
@@ -58,6 +66,11 @@ SELECT
   min(price) AS low_usd,
   max_by(price, order_key) FILTER (WHERE price IS NOT NULL) AS close_usd,
   sum(amount_usd) FILTER (WHERE price IS NOT NULL) AS volume_usd,
+  min_by(price_q, order_key) FILTER (WHERE price_q IS NOT NULL) AS open_q,
+  max(price_q) AS high_q,
+  min(price_q) AS low_q,
+  max_by(price_q, order_key) FILTER (WHERE price_q IS NOT NULL) AS close_q,
+  sum(quote_amount) AS volume_quote,
   count(*) AS n_trades,
   count_if(is_buy) AS n_buys,
   count(DISTINCT trader_id) AS n_traders,
@@ -95,7 +108,15 @@ x AS (
     CASE
       WHEN t.token_bought_mint_address = p.baseMint THEN t.amount_usd / NULLIF(t.token_bought_amount, 0)
       WHEN t.token_sold_mint_address   = p.baseMint THEN t.amount_usd / NULLIF(t.token_sold_amount, 0)
-    END AS price
+    END AS price,
+    CASE
+      WHEN t.token_bought_mint_address = p.baseMint THEN t.token_sold_amount / NULLIF(t.token_bought_amount, 0)
+      WHEN t.token_sold_mint_address   = p.baseMint THEN t.token_bought_amount / NULLIF(t.token_sold_amount, 0)
+    END AS price_q,
+    CASE
+      WHEN t.token_bought_mint_address = p.baseMint THEN t.token_sold_amount
+      WHEN t.token_sold_mint_address   = p.baseMint THEN t.token_bought_amount
+    END AS quote_amount
   FROM dex_solana.trades t
   JOIN pools p ON t.project_program_id = p.pool
   WHERE t.project = 'pumpswap'
@@ -155,7 +176,15 @@ x AS (
     CASE
       WHEN t.token_bought_mint_address = g.base_mint THEN t.amount_usd / NULLIF(t.token_bought_amount, 0)
       ELSE t.amount_usd / NULLIF(t.token_sold_amount, 0)
-    END AS price
+    END AS price,
+    CASE
+      WHEN t.token_bought_mint_address = g.base_mint THEN t.token_sold_amount / NULLIF(t.token_bought_amount, 0)
+      ELSE t.token_bought_amount / NULLIF(t.token_sold_amount, 0)
+    END AS price_q,
+    CASE
+      WHEN t.token_bought_mint_address = g.base_mint THEN t.token_sold_amount
+      ELSE t.token_bought_amount
+    END AS quote_amount
   FROM cp t
   JOIN grad g ON t.project_program_id = g.pool_id AND t.base_mint = g.base_mint
   WHERE t.block_time < g.first_trade + INTERVAL '{horizon_hours}' HOUR
@@ -236,6 +265,11 @@ def to_bar_row(r: dict[str, Any], ingested_at: datetime) -> dict[str, Any]:
         "low_usd": _f(r.get("low_usd")),
         "close_usd": _f(r.get("close_usd")),
         "volume_usd": _f(r.get("volume_usd")),
+        "open_q": _f(r.get("open_q")),
+        "high_q": _f(r.get("high_q")),
+        "low_q": _f(r.get("low_q")),
+        "close_q": _f(r.get("close_q")),
+        "volume_quote": _f(r.get("volume_quote")),
         "n_trades": _i(r.get("n_trades")),
         "n_buys": _i(r.get("n_buys")),
         "n_traders": _i(r.get("n_traders")),

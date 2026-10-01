@@ -197,6 +197,13 @@ _silver_token_count = spark.table(SILVER_TABLE).select("token_id").distinct().co
 
 gold_df = (
     spark.table(SILVER_TABLE)
+    # 2026-09-30: Silver now keeps rows with price_usd = NULL (quote-unit
+    # price only). gold_features.py still assumes a USD price on every
+    # trade, so keep exactly the old behaviour until Gold is taught to use
+    # price_quote (open design question -- a token can trade against
+    # several quotes, so quote-unit prices must not be mixed within one
+    # token's series). See docs/decisions.md.
+    .filter(F.col("price_usd").isNotNull())
     .select(*_GOLD_COLUMNS)
     .groupBy("token_id")
     .applyInPandas(_process_token_group, schema=_ENTRY_SCHEMA)
