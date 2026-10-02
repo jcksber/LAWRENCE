@@ -116,3 +116,13 @@ def test_simulate_trades_accepts_per_row_fees():
     result = simulate_trades(y_true, enter_mask, strategy="t", fee_bps=fees, slippage_bps=0.0)
     # entered rows pay 2*125bps = 2.5% and 2*25bps = 0.5%
     assert result.ev_per_trade == pytest.approx(((0.10 - 0.025) + (0.10 - 0.005)) / 2)
+
+
+
+def test_simulate_trades_scores_at_the_capturable_cap_by_default():
+    y_true = pd.Series([50.0, 0.0])  # a 50x "return" counts as 10x
+    enter_mask = pd.Series([True, True])
+    r = simulate_trades(y_true, enter_mask, strategy="t", fee_bps=0.0, slippage_bps=0.0)
+    assert r.ev_per_trade == pytest.approx(5.0)
+    r100 = simulate_trades(y_true, enter_mask, strategy="t", fee_bps=0.0, slippage_bps=0.0, return_cap=100.0)
+    assert r100.ev_per_trade == pytest.approx(25.0)

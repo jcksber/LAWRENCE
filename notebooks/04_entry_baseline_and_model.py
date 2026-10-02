@@ -65,6 +65,7 @@ import pandas as pd
 
 from backtest.baselines import baseline_a_buy_everything, baseline_b_volume_momentum_filter
 from backtest.walk_forward import round_trip_cost, simulate_trades, venue_fee_bps, walk_forward_folds
+from features.gold_features import CAPTURABLE_RETURN_CAP, winsorize_return
 from models.entry_model import (
     FEATURE_COLUMNS,
     prepare_features,
@@ -139,6 +140,7 @@ for i, (train_mask, test_mask) in enumerate(folds):
 results = []
 last_model = None
 model_trades = []  # 2026-10-02: every row the model entered, for the stress tests below
+ranking_rows = []  # 2026-10-02: ranking-signal diagnostics, independent of the entry threshold
 
 with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
     mlflow.log_param("n_folds_requested", N_WALK_FORWARD_FOLDS)
@@ -176,7 +178,22 @@ with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
             # other. Ranking by score and taking a top-K is still an easy
             # variant to try later -- see entry_model.py's score_candidates.
             "lightgbm_model": preds > round_trip_cost(fees_bps),
+            # 2026-10-02: threshold-free variant -- the model's top 1% of
+            # scores in this fold. Tests ranking quality without depending
+            # on predicted magnitudes being calibrated.
+            "lightgbm_top1pct": preds >= preds.quantile(0.99),
         }
+
+        # Ranking signal (2026-10-02): does a higher score mean a better
+        # trade at all, before any threshold? Spearman rank correlation and
+        # mean net return (10x cap, after this row's costs) by score decile.
+        _net = winsorize_return(y_test, CAPTURABLE_RETURN_CAP) - round_trip_cost(fees_bps)
+        _dec = pd.qcut(preds.rank(method="first"), 10, labels=False) + 1
+        ranking_rows.append({
+            "fold": i,
+            "spearman_pred_vs_y": preds.rank().corr(y_test.rank()),
+            **{f"d{d}_net": _net[_dec == d].mean() for d in range(1, 11)},
+        })
 
         _entered = strategies["lightgbm_model"]
         model_trades.append(
@@ -197,6 +214,11 @@ with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
 
 results_df = pd.DataFrame(results)
 print(results_df.to_string(index=False))
+
+# Ranking signal per fold: spearman > 0 and d10 > d1 means the score orders
+# trades better than chance, even if no decile clears costs yet.
+print("\nRanking signal (mean net return per score decile, 10x cap, after costs):")
+print(pd.DataFrame(ranking_rows).round(4).to_string(index=False))
 
 # COMMAND ----------
 
@@ -250,7 +272,7 @@ print(stress_df.round(4).to_string(index=False))
 # EV by trailing-volume quartile, all folds pooled (cap 10x, the more
 # conservative read).
 mt["vol_q"] = pd.qcut(mt["trailing_volume_usd"].rank(method="first"), 4, labels=["Q1 low", "Q2", "Q3", "Q4 high"])
-liq = mt.groupby("vol_q", observed=True).apply(
+liq = mt.groupby("vol_q", observed=True)[["y_entry", "round_trip", "trailing_volume_usd"]].apply(
     lambda g: pd.Series({
         "trades": len(g),
         "median_trailing_vol_usd": g["trailing_volume_usd"].median(),

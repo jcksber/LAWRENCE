@@ -35,7 +35,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from features.gold_features import RETURN_WINSORIZE_CAP, winsorize_return
+from features.gold_features import CAPTURABLE_RETURN_CAP, RETURN_WINSORIZE_CAP, winsorize_return  # noqa: F401
 
 # 2026-09-18 (see docs/decisions.md): v1's notebook entry decision rule was
 # simply "predicted > 0", which ignores the round-trip trading cost
@@ -171,6 +171,7 @@ def simulate_trades(
     strategy: str,
     fee_bps: "float | pd.Series" = DEFAULT_FEE_BPS,
     slippage_bps: float = DEFAULT_SLIPPAGE_BPS,
+    return_cap: float = CAPTURABLE_RETURN_CAP,
 ) -> BacktestResult:
     """Applies round-trip trading costs (paid on both entry and exit, each
     at fee_bps + slippage_bps) to every row `enter_mask` selects, then
@@ -191,7 +192,9 @@ def simulate_trades(
     chronologically by assessment_time (see walk_forward_folds) -- the
     cumulative curve otherwise doesn't mean anything.
     """
-    y_true = winsorize_return(y_true)
+    # 2026-10-02: scored at CAPTURABLE_RETURN_CAP (10x) by default, the same
+    # cap the model trains on -- see gold_features.CAPTURABLE_RETURN_CAP.
+    y_true = winsorize_return(y_true, return_cap)
     # fee_bps may be a per-row Series (venue_fee_bps) aligned to y_true.
     cost = round_trip_cost(fee_bps, slippage_bps)
     if isinstance(cost, pd.Series):

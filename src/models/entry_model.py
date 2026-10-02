@@ -42,7 +42,7 @@ from __future__ import annotations
 import pandas as pd
 from lightgbm import LGBMRegressor
 
-from features.gold_features import winsorize_return
+from features.gold_features import CAPTURABLE_RETURN_CAP, winsorize_return
 
 NUMERIC_FEATURE_COLUMNS = [
     "trailing_volume_usd",
@@ -79,7 +79,9 @@ def set_categorical_dtypes(candidates: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def prepare_features(candidates: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+def prepare_features(
+    candidates: pd.DataFrame, cap: float = CAPTURABLE_RETURN_CAP
+) -> tuple[pd.DataFrame, pd.Series]:
     """Selects the model's input columns and target from a Gold
     entry_candidates DataFrame. Assumes `set_categorical_dtypes` already
     ran on the full dataset (see its docstring) -- this function does not
@@ -95,7 +97,9 @@ def prepare_features(candidates: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]
     not a gap to fill in.
     """
     X = candidates[FEATURE_COLUMNS].copy()
-    y = winsorize_return(candidates[TARGET_COLUMN].copy())
+    # 2026-10-02: target capped at CAPTURABLE_RETURN_CAP (10x), not 100x --
+    # see gold_features.CAPTURABLE_RETURN_CAP.
+    y = winsorize_return(candidates[TARGET_COLUMN].copy(), cap)
     return X, y
 
 

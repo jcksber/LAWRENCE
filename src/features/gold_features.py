@@ -128,8 +128,17 @@ RUG_CLAMP_RETURN = -1.0  # interim heuristic label for a likely-rugged/dead
 # src/backtest/) at consumption time, not written back to Gold.
 RETURN_WINSORIZE_CAP = 100.0
 
+# 2026-10-02 (see docs/decisions.md, "Stress tests"): the cap the entry
+# model TRAINS on and the backtest SCORES with. At 100x the model learned to
+# chase near-100x outcomes on near-zero-liquidity tokens: positive EV at a
+# 100x cap, negative at 10x, with the top 1% of trades producing 250-400%
+# of profit. 10x is a placeholder for "the most a real position could
+# plausibly capture" until liquidity-aware fill modelling exists.
+# RETURN_WINSORIZE_CAP stays as the outer data-sanity bound.
+CAPTURABLE_RETURN_CAP = 10.0
 
-def winsorize_return(y: Any) -> Any:
+
+def winsorize_return(y: Any, cap: float = RETURN_WINSORIZE_CAP) -> Any:
     """Clips a return (or a pandas Series/numpy array of returns) to
     [-RETURN_WINSORIZE_CAP, RETURN_WINSORIZE_CAP]. See
     RETURN_WINSORIZE_CAP's comment for why this exists and why it's a
@@ -137,7 +146,7 @@ def winsorize_return(y: Any) -> Any:
     (pandas Series, numpy array) via duck typing -- this module has no
     pandas/numpy dependency of its own (see module docstring), so it
     doesn't import either just to support this."""
-    lo, hi = -RETURN_WINSORIZE_CAP, RETURN_WINSORIZE_CAP
+    lo, hi = -cap, cap
     if hasattr(y, "clip"):
         return y.clip(lo, hi)
     return max(lo, min(hi, y))

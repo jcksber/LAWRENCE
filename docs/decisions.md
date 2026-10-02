@@ -1920,3 +1920,42 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   the last completed bar's close (up to 2 min stale), which flatters
   momentum entries. Added stress tests to notebook 04 (caps 10x/2x,
   ex-top-1%, first signal per token, EV by trailing-volume quartile).
+- **Stress tests: the model's positive EV does NOT survive (2026-10-02).**
+  Per fold: EV at a 10x cap -1.1% to -6.6% (all negative); at 2x -6.4% to
+  -13.3%; median net trade -3.6% to -5.4%; EV without the top 1% of trades
+  -8.2% to -14.6%; the top 1% of trades produce 251-408% of total profit
+  (everything else loses money); first signal per token at 10x cap -7.1% to
+  -15.8%. By trailing-volume quartile (pooled, 10x cap): only Q1 is
+  positive (+0.9%, 28% win rate) and its median trailing volume is $0 --
+  tokens with no USD volume (most likely quote-unit / StonkFun tokens,
+  whose platform fees aren't modelled); Q2-Q4 (median $276-$3,631) are
+  -3.6% to -5.2%. **Conclusion: no tradeable edge yet.** The headline
+  +4-9.5% EV is a handful of near-100x outcomes on thin tokens, counted
+  repeatedly via per-minute sampling -- not capturable at any real size.
+  Recorded as-is per the project's honest-reporting rule.
+- **Train and score at a 10x cap; measure ranking signal (Jack approved,
+  2026-10-02).** New `gold_features.CAPTURABLE_RETURN_CAP = 10.0`
+  (placeholder for "most a real position could capture" until liquidity-
+  aware fills exist); `winsorize_return(y, cap)`; `prepare_features` trains
+  on y capped at 10x; `simulate_trades(..., return_cap=10x)` scores every
+  strategy -- model AND both baselines -- at the same cap, so the
+  comparison is like-for-like. RETURN_WINSORIZE_CAP (100x) remains only as
+  the outer data-sanity bound. Notebook 04 adds (a) a threshold-free
+  strategy, `lightgbm_top1pct` (top 1% of scores per fold), and (b) a
+  ranking table per fold: Spearman(pred, y) and mean net return (10x cap,
+  after row costs) by score decile. Tests: gold_features 35, walk_forward
+  12, baselines 3 pass; entry_model tests need lightgbm (CI only).
+- **Planned exit rule: "recover the initial at 2x" (Jack, 2026-10-02) --
+  deferred to the exit/decision layer, not the entry model.** Rule: when
+  a position doubles, sell half (recovering the initial stake) and leave
+  the rest for the exit model to manage. Decision: don't change entry
+  labels for it now. It's a position-management policy, and its value is
+  path-dependent (did the price touch 2x before it fell?), so it belongs
+  in (a) a path-dependent backtest simulator over silver.token_price_1m
+  and (b) as a rule-based exit baseline the exit model must beat. Notes
+  for when it's built: a partial take-profit doesn't raise EV by itself
+  -- it trades some upside for lower variance; it costs an extra sell fee
+  (~1.2-1.25% on curve/fresh PumpSwap); selling half into a thin curve
+  has its own slippage; and on current data 2x within the hold is rare
+  (first-5-minute p90 over 15 min is ~+0.1%), so it would trigger on few
+  trades. Revisit once the entry model shows ranking signal.

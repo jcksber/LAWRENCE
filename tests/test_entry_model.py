@@ -116,7 +116,7 @@ def test_prepare_features_winsorizes_the_target():
     df = set_categorical_dtypes(_synthetic_candidates(5))
     df.loc[0, TARGET_COLUMN] = 16_693_038_859.0  # a real observed extreme value
     _, y = prepare_features(df)
-    assert y.iloc[0] == 100.0  # RETURN_WINSORIZE_CAP
+    assert y.iloc[0] == 10.0  # CAPTURABLE_RETURN_CAP (2026-10-02; was 100x)
 
 
 def test_train_and_score_round_trip_runs_and_beats_a_constant_baseline():
