@@ -80,7 +80,7 @@ GOLD_ENTRY_TABLE = "lawrence.gold.entry_candidates"
 N_WALK_FORWARD_FOLDS = 5  # placeholder -- revisit once real fold sizes are visible below
 
 # is_postgrad_at_t: not a model feature (yet) -- read for per-row trading costs.
-_READ_COLUMNS = ["token_id", "assessment_time", "y_entry", "is_rug_clamped", "is_postgrad_at_t", *FEATURE_COLUMNS]
+_READ_COLUMNS = ["token_id", "assessment_time", "y_entry", "is_rug_clamped", "is_postgrad_at_t", "price_unit", *FEATURE_COLUMNS]
 
 # select() before toPandas() -- same lesson as notebooks/02/03's OOM fix
 # (see docs/decisions.md): don't pull columns nothing downstream reads
@@ -141,6 +141,7 @@ results = []
 last_model = None
 model_trades = []  # 2026-10-02: every row the model entered, for the stress tests below
 ranking_rows = []  # 2026-10-02: ranking-signal diagnostics, independent of the entry threshold
+segment_base = []  # 2026-10-02: buy-everything EV per segment per fold, for comparison
 
 with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
     mlflow.log_param("n_folds_requested", N_WALK_FORWARD_FOLDS)
@@ -189,6 +190,13 @@ with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
         # mean net return (10x cap, after this row's costs) by score decile.
         _net = winsorize_return(y_test, CAPTURABLE_RETURN_CAP) - round_trip_cost(fees_bps)
         _dec = pd.qcut(preds.rank(method="first"), 10, labels=False) + 1
+        segment_base.append(
+            test_df.assign(_net=_net)
+            .groupby(["dex_venue", "price_unit"], observed=True)["_net"]
+            .agg(base_rows="size", base_ev_cap10="mean")
+            .reset_index()
+            .assign(fold=i)
+        )
         ranking_rows.append({
             "fold": i,
             "spearman_pred_vs_y": preds.rank().corr(y_test.rank()),
@@ -197,7 +205,8 @@ with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
 
         _entered = strategies["lightgbm_model"]
         model_trades.append(
-            test_df.loc[_entered, ["token_id", "assessment_time", "y_entry", "trailing_volume_usd"]]
+            test_df.loc[_entered, ["token_id", "assessment_time", "y_entry", "trailing_volume_usd",
+                                   "dex_venue", "price_unit", "is_postgrad_at_t"]]
             .assign(fold=i, round_trip=round_trip_cost(fees_bps)[_entered], pred=preds[_entered])
         )
 
@@ -281,6 +290,53 @@ liq = mt.groupby("vol_q", observed=True)[["y_entry", "round_trip", "trailing_vol
     })
 )
 print(liq.round(4).to_string())
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Where do the model's trades -- and results -- come from? (2026-10-02)
+# MAGIC
+# MAGIC Split by launch venue x price unit. `usd` + `pumpdotfun` is the segment
+# MAGIC we trust most (SOL-quoted, Dune USD prices, fees verified). `quote`
+# MAGIC tokens (mostly StonkFun on LaunchLab) are priced in another token's
+# MAGIC units, have no USD volume, and pay platform fees we don't model, so
+# MAGIC their EV here is an UPPER bound. `base_ev_cap10` = buying every
+# MAGIC candidate in that segment, the right yardstick per segment.
+
+# COMMAND ----------
+
+mt["net_cap10"] = _net(mt, 10.0)
+mt["zero_usd_volume"] = mt["trailing_volume_usd"].fillna(0) == 0
+seg = (
+    mt.groupby(["dex_venue", "price_unit"], observed=True)
+    .agg(
+        trades=("net_cap10", "size"),
+        unique_tokens=("token_id", "nunique"),
+        ev_cap10=("net_cap10", "mean"),
+        median_net=("net_cap10", "median"),
+        win_rate=("net_cap10", lambda x: (x > 0).mean()),
+        zero_usd_volume_share=("zero_usd_volume", "mean"),
+        postgrad_share=("is_postgrad_at_t", lambda x: x.fillna(False).astype(bool).mean()),
+    )
+    .reset_index()
+)
+seg["share_of_trades"] = seg["trades"] / seg["trades"].sum()
+base = (
+    pd.concat(segment_base, ignore_index=True)
+    .groupby(["dex_venue", "price_unit"], observed=True)
+    .apply(lambda g: pd.Series({
+        "base_rows": g["base_rows"].sum(),
+        "base_ev_cap10": (g["base_ev_cap10"] * g["base_rows"]).sum() / g["base_rows"].sum(),
+    }), include_groups=False)
+    .reset_index()
+)
+print(seg.merge(base, on=["dex_venue", "price_unit"], how="left").round(4).to_string(index=False))
+
+# Same split per fold, EV only -- is any segment's edge consistent across time?
+print(
+    mt.pivot_table(index=["dex_venue", "price_unit"], columns="fold", values="net_cap10", aggfunc="mean", observed=True)
+    .round(4).to_string()
+)
 
 # COMMAND ----------
 

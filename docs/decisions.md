@@ -1959,3 +1959,26 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   has its own slippage; and on current data 2x within the hold is rare
   (first-5-minute p90 over 15 min is ~+0.1%), so it would trigger on few
   trades. Revisit once the entry model shows ranking signal.
+- **04 at a 10x cap (2026-10-02): real ranking signal, ~breakeven after
+  costs.** Spearman(pred, y) 0.30 / 0.31 / 0.31 / 0.28 / 0.21 across folds;
+  net return by score decile is monotone in every fold (d1 ~ -22% ->
+  d10 -1.1% to -3.6%) -- the model orders trades far better than chance,
+  but even its top decile loses after costs. Baselines at 10x: A -7.2% to
+  -8.3%, B -8.9% to -10.3%. Model (threshold) EV +0.6 / -1.2 / -3.6 /
+  +3.3 / +0.5%; top-1% variant +0.7 / -1.1 / -4.3 / +1.6 / +5.0%. So the
+  model beats both baselines by ~7-9 points in every fold but has no
+  reliable absolute edge. Still tail-dependent: median net -3.5% to -5.0%,
+  negative ex-top-1%, top 1% = 147-321% of profit, negative at a 2x cap.
+  Red flag: by trailing-volume quartile, Q1 AND Q2 have median trailing
+  USD volume $0 -- about half the model's trades are on tokens with no
+  USD volume (likely quote-unit / StonkFun tokens, whose platform fees
+  aren't modelled and whose returns include the quote asset's moves). Q3
+  (median $774) +2.0%, Q4 ($5.4k) -0.7%. Later folds score better
+  (more training history), consistent with the earlier data-starvation read.
+- **Segment breakdown added to notebook 04 (2026-10-02).** Model trades
+  split by launch venue x price_unit (trades, unique tokens, EV and median
+  at 10x cap, win rate, zero-USD-volume share, post-grad share, share of
+  all trades) next to each segment's buy-everything EV, plus per-fold EV
+  by segment. Purpose: find out whether the ~breakeven result comes from
+  the trustworthy segment (pumpdotfun / usd) or from quote-unit tokens
+  whose fees and prices we can't fully trust.
