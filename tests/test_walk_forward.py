@@ -98,3 +98,21 @@ def test_simulate_trades_handles_zero_trades_without_crashing():
     import math
 
     assert math.isnan(result.ev_per_trade)
+
+
+
+def test_venue_fee_bps_maps_venue_and_phase():
+    from backtest.walk_forward import venue_fee_bps
+
+    venues = pd.Series(["pumpdotfun", "pumpdotfun", "raydium_launchlab", "raydium_v4"])
+    postgrad = pd.Series([False, True, False, None])
+    assert venue_fee_bps(venues, postgrad).tolist() == [125.0, 120.0, 100.0, 30.0]
+
+
+def test_simulate_trades_accepts_per_row_fees():
+    y_true = pd.Series([0.10, 0.10, 0.10])
+    enter_mask = pd.Series([True, False, True])
+    fees = pd.Series([125.0, 0.0, 25.0])
+    result = simulate_trades(y_true, enter_mask, strategy="t", fee_bps=fees, slippage_bps=0.0)
+    # entered rows pay 2*125bps = 2.5% and 2*25bps = 0.5%
+    assert result.ev_per_trade == pytest.approx(((0.10 - 0.025) + (0.10 - 0.005)) / 2)

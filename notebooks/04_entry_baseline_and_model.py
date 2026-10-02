@@ -64,7 +64,7 @@ import mlflow.lightgbm
 import pandas as pd
 
 from backtest.baselines import baseline_a_buy_everything, baseline_b_volume_momentum_filter
-from backtest.walk_forward import round_trip_cost, simulate_trades, walk_forward_folds
+from backtest.walk_forward import round_trip_cost, simulate_trades, venue_fee_bps, walk_forward_folds
 from models.entry_model import (
     FEATURE_COLUMNS,
     prepare_features,
@@ -78,7 +78,8 @@ from models.entry_model import (
 GOLD_ENTRY_TABLE = "lawrence.gold.entry_candidates"
 N_WALK_FORWARD_FOLDS = 5  # placeholder -- revisit once real fold sizes are visible below
 
-_READ_COLUMNS = ["token_id", "assessment_time", "y_entry", "is_rug_clamped", *FEATURE_COLUMNS]
+# is_postgrad_at_t: not a model feature (yet) -- read for per-row trading costs.
+_READ_COLUMNS = ["token_id", "assessment_time", "y_entry", "is_rug_clamped", "is_postgrad_at_t", *FEATURE_COLUMNS]
 
 # select() before toPandas() -- same lesson as notebooks/02/03's OOM fix
 # (see docs/decisions.md): don't pull columns nothing downstream reads
@@ -153,6 +154,15 @@ with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
         last_model = train_entry_model(X_train, y_train)
         preds = score_candidates(last_model, X_test)
 
+        # 2026-10-02: per-row fees by venue + phase (pump.fun curve 1.25%,
+        # fresh PumpSwap 1.20%, LaunchLab curve >=1%, CPMM 0.25%; see
+        # walk_forward.VENUE_PHASE_FEE_BPS) instead of one AMM-style 30 bps.
+        # Used for BOTH the model's entry rule and the backtest that scores
+        # every strategy, so they can't disagree about what a trade costs.
+        fees_bps = venue_fee_bps(test_df["dex_venue"], test_df["is_postgrad_at_t"])
+        if i == 0:
+            print(f"Mean round-trip cost on fold-0 test rows: {round_trip_cost(fees_bps).mean():.2%}")
+
         strategies = {
             "baseline_a_buy_everything": baseline_a_buy_everything(test_df),
             "baseline_b_volume_momentum": baseline_b_volume_momentum_filter(test_df),
@@ -164,11 +174,11 @@ with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
             # entry decision and the cost that scores it agree with each
             # other. Ranking by score and taking a top-K is still an easy
             # variant to try later -- see entry_model.py's score_candidates.
-            "lightgbm_model": preds > round_trip_cost(),
+            "lightgbm_model": preds > round_trip_cost(fees_bps),
         }
 
         for strategy_name, enter_mask in strategies.items():
-            result = simulate_trades(y_test, enter_mask, strategy=strategy_name)
+            result = simulate_trades(y_test, enter_mask, strategy=strategy_name, fee_bps=fees_bps)
             results.append({"fold": i, **result.__dict__})
             for metric in ("ev_per_trade", "win_rate", "max_drawdown", "n_trades", "total_return"):
                 mlflow.log_metric(f"fold{i}_{strategy_name}_{metric}", getattr(result, metric))

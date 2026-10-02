@@ -51,10 +51,45 @@ from features.gold_features import RETURN_WINSORIZE_CAP, winsorize_return
 DEFAULT_FEE_BPS = 30.0
 DEFAULT_SLIPPAGE_BPS = 50.0
 
+# 2026-10-02: per-row fees by venue + phase. The 30 bps default is an
+# AMM-style fee (Raydium v4); Gold v2's candidates trade mostly on launchpad
+# curves and fresh graduation pools, which charge far more. Verified
+# against the venues' own docs on 2026-10-02 (see docs/decisions.md):
+#   - pump.fun bonding curve: 1.25% per trade (0.30% creator + 0.95%
+#     protocol), pump.fun/docs/fees.
+#   - PumpSwap canonical pool after graduation: tiered by market cap; a
+#     freshly graduated token (< ~1,470 SOL mcap) pays 1.20-1.25%, falling
+#     to 0.30% only above ~98k SOL mcap. 120 bps used for the first 24h.
+#   - Raydium LaunchLab curve: 1% base trade fee for LaunchLab-UI launches
+#     (Raydium, 2025); third-party platforms (StonkFun, letsbonk.fun) can
+#     add a platform fee on top -- not modelled, so this is a FLOOR.
+#   - Raydium CPMM after LaunchLab graduation: 25 bps standard tier --
+#     placeholder; platform fee tiers not verified.
+VENUE_PHASE_FEE_BPS = {
+    ("pumpdotfun", False): 125.0,
+    ("pumpdotfun", True): 120.0,
+    ("raydium_launchlab", False): 100.0,
+    ("raydium_launchlab", True): 25.0,
+}
+
+
+def venue_fee_bps(dex_venue: pd.Series, is_postgrad: pd.Series) -> pd.Series:
+    """Per-row fee in bps from (launch venue, is_postgrad_at_t); anything
+    unmapped falls back to DEFAULT_FEE_BPS."""
+    postgrad = is_postgrad.fillna(False).astype(bool)
+    return pd.Series(
+        [
+            VENUE_PHASE_FEE_BPS.get((v, p), DEFAULT_FEE_BPS)
+            for v, p in zip(dex_venue.astype(object), postgrad)
+        ],
+        index=dex_venue.index,
+        dtype=float,
+    )
+
 
 def round_trip_cost(
-    fee_bps: float = DEFAULT_FEE_BPS, slippage_bps: float = DEFAULT_SLIPPAGE_BPS
-) -> float:
+    fee_bps: "float | pd.Series" = DEFAULT_FEE_BPS, slippage_bps: float = DEFAULT_SLIPPAGE_BPS
+) -> "float | pd.Series":
     """Round-trip trading cost as a fraction of position size (fee +
     slippage, paid on both entry and exit) -- same formula `simulate_trades`
     applies internally, exposed here so callers (the notebook's entry
@@ -134,8 +169,8 @@ def simulate_trades(
     enter_mask: pd.Series,
     *,
     strategy: str,
-    fee_bps: float = 30.0,
-    slippage_bps: float = 50.0,
+    fee_bps: "float | pd.Series" = DEFAULT_FEE_BPS,
+    slippage_bps: float = DEFAULT_SLIPPAGE_BPS,
 ) -> BacktestResult:
     """Applies round-trip trading costs (paid on both entry and exit, each
     at fee_bps + slippage_bps) to every row `enter_mask` selects, then
@@ -157,7 +192,10 @@ def simulate_trades(
     cumulative curve otherwise doesn't mean anything.
     """
     y_true = winsorize_return(y_true)
+    # fee_bps may be a per-row Series (venue_fee_bps) aligned to y_true.
     cost = round_trip_cost(fee_bps, slippage_bps)
+    if isinstance(cost, pd.Series):
+        cost = cost[enter_mask]
     trades = y_true[enter_mask].astype(float) - cost
 
     n_candidates = int(len(y_true))

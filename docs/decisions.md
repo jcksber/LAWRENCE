@@ -1883,3 +1883,28 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   -- the base rate to beat; and ~half of Gold was idle samples. Added
   ACTIVE_WINDOW = 2 min (Jack approved): v2 sampling keeps T only if the
   token traded within 2 min before T. 35 gold_features tests pass.
+- **Gold v2 run 3, with ACTIVE_WINDOW (2026-10-02).** entry 7,523,114 rows /
+  1,146,630 tokens (all tokens kept; ~14M idle samples removed); exit
+  4,232,595 / 234,701 tokens (exit needs a token still ACTIVE >= 15 min
+  after a prior price, so short-lived tokens drop out -- expected). 15m
+  label by age (pre-grad): 0-5m 3.18M rows, 33.4% zero, p10 -46.4%, p90
+  +0.1%, mean -3.80%; 5-15m 1.71M, 29.8% zero, p90 +0.7%, mean -2.45%;
+  15-60m 1.67M, 27.9% zero, p90 +5.7%, mean -0.90%; 60m+ 478k, 43.7%
+  zero, p90 +2.7%, mean +0.41%. Under notebook 04's 8M cap -> trains on
+  all rows. Open issue before 04: backtest cost model is 30 bps fee +
+  50 bps slippage per side (AMM-style), but pump.fun's bonding curve
+  charges ~1.25% per trade -- curve-phase round trips are understated ~2x.
+- **Per-row trading costs by venue + phase (Jack approved, 2026-10-02).**
+  Verified fees: pump.fun curve 1.25% per trade (0.30% creator + 0.95%
+  protocol, pump.fun/docs/fees); PumpSwap canonical pools are tiered by
+  market cap -- 1.25% under 420 SOL, 1.20% at 420-1,470 SOL, down to 0.30%
+  only above ~98k SOL -- so a freshly graduated token pays ~1.2%, NOT the
+  ~25-30 bps I first assumed; LaunchLab-UI curve 1% base fee (Raydium),
+  with third-party platform fees on top not modelled (a floor); CPMM 25 bps
+  standard tier (placeholder). `walk_forward.VENUE_PHASE_FEE_BPS` +
+  `venue_fee_bps(dex_venue, is_postgrad_at_t)`; `round_trip_cost` and
+  `simulate_trades` accept a per-row fee Series. Notebook 04 uses the same
+  per-row fees for the model's entry rule (pred > row's round-trip cost)
+  and for scoring every strategy. Slippage stays 50 bps/side (placeholder;
+  thin curves are likely worse). Round trip on the pump.fun curve is now
+  2 x (125 + 50) = 3.5% vs the old 1.6%.
