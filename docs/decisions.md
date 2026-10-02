@@ -1908,3 +1908,15 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   and for scoring every strategy. Slippage stays 50 bps/side (placeholder;
   thin curves are likely worse). Round trip on the pump.fun curve is now
   2 x (125 + 50) = 3.5% vs the old 1.6%.
+- **First entry-model result on Gold v2 + real costs (2026-10-02).** Per
+  fold (EV/trade after per-row costs; win rate; trades): model +5.0% /
+  9.4% / 22,269; +9.5% / 10.5% / 35,129; +4.7% / 9.3% / 32,044; +4.5% /
+  18.2% / 69,251; +4.1% / 22.1% / 90,831. Baseline A (buy everything)
+  -5.4% to -6.4%; Baseline B (volume/momentum) -7.8% to -9.0% -- worse
+  than A. First time the model beats both baselines in every fold, and
+  the first positive EV after costs. NOT yet trusted: low win rate +
+  positive EV = right-tail driven; per-minute sampling lets one token be
+  entered many times; returns are capped at 100x; and the entry price is
+  the last completed bar's close (up to 2 min stale), which flatters
+  momentum entries. Added stress tests to notebook 04 (caps 10x/2x,
+  ex-top-1%, first signal per token, EV by trailing-volume quartile).

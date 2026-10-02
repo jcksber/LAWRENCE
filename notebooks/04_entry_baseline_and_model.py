@@ -138,6 +138,7 @@ for i, (train_mask, test_mask) in enumerate(folds):
 
 results = []
 last_model = None
+model_trades = []  # 2026-10-02: every row the model entered, for the stress tests below
 
 with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
     mlflow.log_param("n_folds_requested", N_WALK_FORWARD_FOLDS)
@@ -177,6 +178,12 @@ with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
             "lightgbm_model": preds > round_trip_cost(fees_bps),
         }
 
+        _entered = strategies["lightgbm_model"]
+        model_trades.append(
+            test_df.loc[_entered, ["token_id", "assessment_time", "y_entry", "trailing_volume_usd"]]
+            .assign(fold=i, round_trip=round_trip_cost(fees_bps)[_entered], pred=preds[_entered])
+        )
+
         for strategy_name, enter_mask in strategies.items():
             result = simulate_trades(y_test, enter_mask, strategy=strategy_name, fee_bps=fees_bps)
             results.append({"fold": i, **result.__dict__})
@@ -190,6 +197,68 @@ with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
 
 results_df = pd.DataFrame(results)
 print(results_df.to_string(index=False))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Stress tests on the model's trades (2026-10-02)
+# MAGIC
+# MAGIC A positive EV with a ~10-20% win rate means the result rides on a few
+# MAGIC big winners. Before believing it, check whether it survives:
+# MAGIC 1. **Tighter caps** on the per-trade return (100x is the training cap;
+# MAGIC    what if only 10x or 2x is ever capturable?).
+# MAGIC 2. **Dropping the top 1% of trades** -- is the edge broad or a handful
+# MAGIC    of lottery tickets?
+# MAGIC 3. **One trade per token** -- T is sampled every minute, so the model
+# MAGIC    can "enter" the same token dozens of times; one winner then counts
+# MAGIC    dozens of times. Keep only each token's FIRST signal per fold.
+# MAGIC 4. **Liquidity** -- EV by trailing-volume quartile; edge that only
+# MAGIC    exists on near-zero-volume tokens isn't tradeable at any real size.
+
+# COMMAND ----------
+
+import numpy as np  # noqa: E402
+
+mt = pd.concat(model_trades, ignore_index=True)
+
+
+def _net(df, cap):
+    return df["y_entry"].clip(-1, cap) - df["round_trip"]
+
+
+rows = []
+for fold, g in mt.groupby("fold"):
+    net100 = _net(g, 100.0)
+    top = net100 >= net100.quantile(0.99)
+    first = g.sort_values("assessment_time").drop_duplicates("token_id", keep="first")
+    rows.append({
+        "fold": fold,
+        "trades": len(g),
+        "unique_tokens": g["token_id"].nunique(),
+        "ev_cap100": net100.mean(),
+        "ev_cap10": _net(g, 10.0).mean(),
+        "ev_cap2": _net(g, 2.0).mean(),
+        "median_net": net100.median(),
+        "ev_ex_top1pct": net100[~top].mean(),
+        "top1pct_share_of_pnl": net100[top].sum() / net100.sum() if net100.sum() else np.nan,
+        "ev_first_per_token": _net(first, 100.0).mean(),
+        "ev_first_per_token_cap10": _net(first, 10.0).mean(),
+    })
+stress_df = pd.DataFrame(rows)
+print(stress_df.round(4).to_string(index=False))
+
+# EV by trailing-volume quartile, all folds pooled (cap 10x, the more
+# conservative read).
+mt["vol_q"] = pd.qcut(mt["trailing_volume_usd"].rank(method="first"), 4, labels=["Q1 low", "Q2", "Q3", "Q4 high"])
+liq = mt.groupby("vol_q", observed=True).apply(
+    lambda g: pd.Series({
+        "trades": len(g),
+        "median_trailing_vol_usd": g["trailing_volume_usd"].median(),
+        "ev_cap10": _net(g, 10.0).mean(),
+        "win_rate": (_net(g, 10.0) > 0).mean(),
+    })
+)
+print(liq.round(4).to_string())
 
 # COMMAND ----------
 
