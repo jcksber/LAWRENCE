@@ -79,6 +79,13 @@ DENSE_SAMPLE_INTERVAL = timedelta(minutes=1)  # 2026-10-01: sample every minute
 DENSE_SAMPLE_WINDOW = timedelta(minutes=60)    # for a token's first hour after
     # launch (where nearly all launch-token decisions and action happen), then
     # fall back to T_SAMPLE_INTERVAL. Only applies when launch_time is known.
+ACTIVE_WINDOW = timedelta(minutes=2)  # 2026-10-02: in v2 sampling (launch_time
+    # known), keep a T only if the token had a record (trade / bar close)
+    # within this window before T. Gold v2's first run: 68-71% of labels for
+    # T 15+ min after launch were exactly 0 -- dense sampling over tokens that
+    # had already gone quiet. A live bot scores tokens while they trade, so
+    # idle moments aren't decisions it makes. Labels are unchanged: a token
+    # going quiet AFTER T still yields an honest 0.
 T_SAMPLE_INTERVAL = timedelta(minutes=15)  # training-data T-sampling grid --
     # matches the deployed Bronze/Silver cadence, one of the two options
     # label_spec.md's "Training sample cadence" open question names, picked
@@ -440,6 +447,7 @@ def sample_assessment_times(
     launch_time: Any = None,
     dense_interval: timedelta = DENSE_SAMPLE_INTERVAL,
     dense_window: timedelta = DENSE_SAMPLE_WINDOW,
+    active_window: timedelta | None = ACTIVE_WINDOW,
 ) -> list[datetime]:
     """Candidate T values for a token, from its first to its last record.
 
@@ -447,7 +455,9 @@ def sample_assessment_times(
     With `launch_time` (2026-10-01): every `dense_interval` for the first
     `dense_window` after launch, then every `interval` -- most launch tokens
     live and die within minutes, so a 15-minute grid gave many of them a
-    single sample at their first bar. Training-data sampling only."""
+    single sample at their first bar. In that mode, T is also kept only if
+    the token had a record within `active_window` before it (see
+    ACTIVE_WINDOW). Training-data sampling only."""
     if not trades:
         return []
     start = _parse(trades[0]["trade_time"])
@@ -458,4 +468,12 @@ def sample_assessment_times(
     while cur <= end:
         times.append(cur)
         cur += dense_interval if dense_until is not None and cur < dense_until else interval
+    if dense_until is not None and active_window is not None:
+        times = [t for t in times if _is_active(trades, t, active_window)]
     return times
+
+
+def _is_active(trades: TokenTrades, t: datetime, window: timedelta) -> bool:
+    """True if the token's last record at or before t is within `window`."""
+    idx = _count_at_or_before(trades, t) - 1
+    return idx >= 0 and t - _parse(trades[idx]["trade_time"]) <= window

@@ -342,9 +342,25 @@ def test_multi_horizon_labels_and_per_horizon_censoring():
 
 def test_dense_sampling_first_hour_then_15_min():
     bars = [_bar(0, 1.0), _bar(90, 1.0)]
-    times = sample_assessment_times(bars, launch_time=T0)
+    times = sample_assessment_times(bars, launch_time=T0, active_window=None)  # grid only
     offsets = [(x - T0).total_seconds() / 60 for x in times]
     assert offsets[:3] == [0, 1, 2]
     assert 59 in offsets and 60 in offsets
     assert offsets[offsets.index(60) + 1] == 75  # 15-min steps after the first hour
     assert offsets[-1] == 90
+
+
+
+def test_v2_sampling_skips_idle_moments():
+    # trades at minutes 0, 1 and 20 only; dense grid would sample 0..20
+    bars = [_bar(0, 1.0), _bar(1, 1.0), _bar(20, 1.0)]
+    times = sample_assessment_times(bars, launch_time=T0)
+    offsets = [(x - T0).total_seconds() / 60 for x in times]
+    # active = within 2 min after a record: 0,1,2,3 then 20
+    assert offsets == [0, 1, 2, 3, 20]
+
+
+def test_v1_sampling_unchanged_without_launch_time():
+    bars = [_bar(0, 1.0), _bar(20, 1.0)]
+    times = sample_assessment_times(bars, interval=timedelta(minutes=10))
+    assert [(x - T0).total_seconds() / 60 for x in times] == [0, 10, 20]

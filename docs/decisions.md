@@ -1872,3 +1872,14 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   Notebook 04 now samples a deterministic subset of TOKENS (xxhash64) when
   entry_candidates exceeds MAX_TRAIN_ROWS = 8M, since dense sampling can
   make Gold 5-10x larger than the driver can toPandas().
+- **Gold v2 run 2 + activity filter (2026-10-02).** With the rug-clamp fix:
+  entry 21,550,424 rows / 1,146,630 tokens, exit 20,296,495 / 413,307,
+  rug_clamped_share 0, censored_60m 0.05% (pre-grad) / 0.57% (post-grad).
+  15m label by token age at T (pre-grad): 0-5m 3.32M rows, 34.5% exactly
+  zero, p10 -43.8%, p90 +0.1%, capped mean -3.63%; 5-15m 4.62M, 52.8%
+  zero, mean -0.93%; 15-60m 10.21M, 68.2% zero, mean +0.09%; 60m+ 2.43M,
+  70.8% zero, mean +0.19%. Reading: first-5-minute entries lose ~3.6% over
+  15 min on average BEFORE fees, with winners only in the top few percent
+  -- the base rate to beat; and ~half of Gold was idle samples. Added
+  ACTIVE_WINDOW = 2 min (Jack approved): v2 sampling keeps T only if the
+  token traded within 2 min before T. 35 gold_features tests pass.

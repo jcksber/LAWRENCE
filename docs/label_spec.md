@@ -178,3 +178,9 @@ position history is the ground truth this substitutes for until it exists.
    horizon can be chosen from data instead of guessed.
 4. **Denser sampling.** T is sampled every minute for a token's first hour
    after launch, then every 15 minutes.
+5. **Activity filter (2026-10-02).** In v2 sampling, an assessment point T
+   is kept only if the token had a trade/bar within the 2 minutes before T
+   (`ACTIVE_WINDOW`). Gold v2's first run showed 68-71% of 15m labels were
+   exactly 0 for T 15+ min after launch -- idle moments on tokens that had
+   already gone quiet, which a live bot wouldn't be scoring. Labels are
+   unaffected; only which moments are sampled changes.
