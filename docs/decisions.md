@@ -1845,3 +1845,30 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   because its trades stopped at graduation. 29 gold_features tests pass.
   Model feature list unchanged for now -- adding the new columns is a
   separate, measured step.
+- **Gold v2 built (2026-10-01).** entry_candidates 4,868,739 rows /
+  1,145,637 tokens (of 1,147,025 candidates); exit_candidates 7,148,227
+  rows / 413,115 tokens (exit needs a price at T - h with h >= 15 min, so
+  tokens that live < ~15 min produce none -- expected). Entry labels by
+  phase/unit: pre-grad usd 4.27M rows, rug_clamped 74.7%, median y -1,
+  capped mean -0.75; pre-grad quote 186k, 62.0%, -1, -0.55; post-grad usd
+  373k, 37.7%, -0.19, -0.36; post-grad quote 41k, 11.8%, -0.05, -0.09.
+  **Problem found: the rug-clamp proxy is wrong for these venues.** "No
+  trade near T+hold" is labelled -100% ("liquidity pulled"), but a
+  bonding curve has no LP to pull (SOL sits in the curve program; you can
+  always sell back at the curve price), and PumpSwap / LaunchLab
+  graduation pools have their LP burned or locked at migration. A quiet
+  token's realizable price is its LAST price, not zero. So ~3/4 of
+  pre-graduation labels are artificially -100%. Proposed fix pending
+  Jack's call (see next entry).
+- **Label fixes + time-scale changes (Jack approved, 2026-10-01).** See
+  label_spec.md "2026-10-01 changes". gold_features: NO_RUG_PHASES =
+  {curve, postgrad} -> exit price = last price (no staleness) instead of
+  RUG_CLAMP_RETURN; HOLD_MINUTES 60 -> 15; LABEL_HOLD_MINUTES = (5, 15, 60)
+  stored as y_entry_{h}m / y_exit_{h}m (NULL when censored); dense T
+  sampling (1 min for the first 60 min after launch, then 15 min). Jack
+  asked whether tuning PRICE_STALENESS would do instead: no -- any finite
+  staleness limit is what converts "went quiet" into -100%; only removing
+  it for non-rug phases is correct. 33 gold_features tests pass.
+  Notebook 04 now samples a deterministic subset of TOKENS (xxhash64) when
+  entry_candidates exceeds MAX_TRAIN_ROWS = 8M, since dense sampling can
+  make Gold 5-10x larger than the driver can toPandas().

@@ -59,12 +59,26 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-HOLD_MINUTES = 60  # placeholder -- tune once real price-decay distributions
-                    # are visible in Gold; see docs/label_spec.md
+HOLD_MINUTES = 15  # PRIMARY label horizon (y_entry / y_exit). 2026-10-01:
+    # cut from 60 -- median pump.fun graduation is ~4.4 min after launch and
+    # most tokens are dead within 15, so a 60-min hold measured long after
+    # everything happened. Still a placeholder; LABEL_HOLD_MINUTES below
+    # stores several horizons so the choice can be made from data.
+LABEL_HOLD_MINUTES: tuple[int, ...] = (5, 15, 60)  # every Gold row also carries
+    # y_entry_{h}m / y_exit_{h}m for each h here (NULL when censored for that h)
+NO_RUG_PHASES = frozenset({"curve", "postgrad"})  # 2026-10-01: phases whose
+    # liquidity CAN'T be pulled -- a bonding curve holds its SOL in the
+    # program (you can always sell back at the curve price), and pump.fun /
+    # LaunchLab burn or lock the graduation pool's LP. A quiet token in these
+    # phases keeps its LAST price; it is never rug-clamped to -100%.
 TRAILING_WINDOW = timedelta(hours=48)  # placeholder, matches label_spec.md's
                                         # 24-72h candidate-activity window
 PRICE_STALENESS = timedelta(minutes=30)  # how old the nearest trade can be
                                           # and still count as "the price at T"
+DENSE_SAMPLE_INTERVAL = timedelta(minutes=1)  # 2026-10-01: sample every minute
+DENSE_SAMPLE_WINDOW = timedelta(minutes=60)    # for a token's first hour after
+    # launch (where nearly all launch-token decisions and action happen), then
+    # fall back to T_SAMPLE_INTERVAL. Only applies when launch_time is known.
 T_SAMPLE_INTERVAL = timedelta(minutes=15)  # training-data T-sampling grid --
     # matches the deployed Bronze/Silver cadence, one of the two options
     # label_spec.md's "Training sample cadence" open question names, picked
@@ -284,6 +298,44 @@ def _censored(t: datetime, hold_minutes: int, observed_until: Any) -> bool:
     return observed_until is not None and t + timedelta(minutes=hold_minutes) > _parse(observed_until)
 
 
+def _exit_price(trades: TokenTrades, t_exit: datetime) -> float | None:
+    """Price realizable at t_exit. Normal staleness rule first; if that finds
+    nothing but the token's last record at/before t_exit is in a
+    NO_RUG_PHASES phase, the token just went quiet -- its last price still
+    stands (no LP to pull), so use it with no staleness limit."""
+    p = price_at(trades, t_exit)
+    if p is not None:
+        return p
+    idx = _count_at_or_before(trades, t_exit) - 1
+    if idx >= 0 and trades[idx].get("phase") in NO_RUG_PHASES:
+        last = _price(trades[idx])
+        if last is not None and last > 0:
+            return last
+    return None
+
+
+def _forward_return(
+    trades: TokenTrades, t: datetime, price_t: float, hold_minutes: int, observed_until: Any
+) -> tuple[float, bool] | None:
+    """(return, is_rug_clamped) over `hold_minutes`, or None if censored."""
+    if _censored(t, hold_minutes, observed_until):
+        return None
+    price_exit = _exit_price(trades, t + timedelta(minutes=hold_minutes))
+    if price_exit is not None:
+        return (price_exit - price_t) / price_t, False
+    return RUG_CLAMP_RETURN, True
+
+
+def _multi_horizon(
+    prefix: str, trades: TokenTrades, t: datetime, price_t: float, observed_until: Any
+) -> dict[str, Any]:
+    out = {}
+    for h in LABEL_HOLD_MINUTES:
+        r = _forward_return(trades, t, price_t, h, observed_until)
+        out[f"{prefix}_{h}m"] = None if r is None else r[0]
+    return out
+
+
 def build_entry_row(
     token_id: str,
     t: datetime,
@@ -310,13 +362,7 @@ def build_entry_row(
     if features is None:
         return None
 
-    price_exit = price_at(trades, t + timedelta(minutes=hold_minutes))
-    if price_exit is not None:
-        y_entry = (price_exit - price_t) / price_t
-        is_rug_clamped = False
-    else:
-        y_entry = RUG_CLAMP_RETURN
-        is_rug_clamped = True
+    y_entry, is_rug_clamped = _forward_return(trades, t, price_t, hold_minutes, None)
 
     return {
         "token_id": token_id,
@@ -326,6 +372,7 @@ def build_entry_row(
         "hold_minutes": hold_minutes,
         "y_entry": y_entry,
         "is_rug_clamped": is_rug_clamped,
+        **_multi_horizon("y_entry", trades, t, price_t, observed_until),
         **features,
         **_v2_features(trades, t, launch_time),
     }
@@ -356,15 +403,10 @@ def build_exit_rows(
     if features is None:
         return []
 
-    price_exit = price_at(trades, t + timedelta(minutes=hold_minutes))
-    if price_exit is not None:
-        y_exit = (price_exit - price_t) / price_t
-        is_rug_clamped = False
-    else:
-        # Interim heuristic (see module docstring): T had a real price but
-        # nothing trades near T+hold_minutes -- clamp instead of dropping.
-        y_exit = RUG_CLAMP_RETURN
-        is_rug_clamped = True
+    # Rug-clamp only where liquidity can actually be pulled (see
+    # _exit_price / NO_RUG_PHASES); censoring already handled above.
+    y_exit, is_rug_clamped = _forward_return(trades, t, price_t, hold_minutes, None)
+    horizons = _multi_horizon("y_exit", trades, t, price_t, observed_until)
 
     rows = []
     for h in simulated_holds:
@@ -383,6 +425,7 @@ def build_exit_rows(
                 "unrealized_return": (price_t - entry_price) / entry_price,
                 "y_exit": y_exit,
                 "is_rug_clamped": is_rug_clamped,
+                **horizons,
                 **features,
                 **_v2_features(trades, t, launch_time),
             }
@@ -391,18 +434,28 @@ def build_exit_rows(
 
 
 def sample_assessment_times(
-    trades: TokenTrades, *, interval: timedelta = T_SAMPLE_INTERVAL
+    trades: TokenTrades,
+    *,
+    interval: timedelta = T_SAMPLE_INTERVAL,
+    launch_time: Any = None,
+    dense_interval: timedelta = DENSE_SAMPLE_INTERVAL,
+    dense_window: timedelta = DENSE_SAMPLE_WINDOW,
 ) -> list[datetime]:
-    """Candidate T values for a token: a fixed grid from its first to last
-    trade, at `interval` spacing. Training-data sampling only -- production
-    scoring (T = "now") doesn't need this."""
+    """Candidate T values for a token, from its first to its last record.
+
+    Without `launch_time`: a fixed grid at `interval` (v1 behaviour).
+    With `launch_time` (2026-10-01): every `dense_interval` for the first
+    `dense_window` after launch, then every `interval` -- most launch tokens
+    live and die within minutes, so a 15-minute grid gave many of them a
+    single sample at their first bar. Training-data sampling only."""
     if not trades:
         return []
     start = _parse(trades[0]["trade_time"])
     end = _parse(trades[-1]["trade_time"])
+    dense_until = _parse(launch_time) + dense_window if launch_time is not None else None
     times = []
     cur = start
     while cur <= end:
         times.append(cur)
-        cur += interval
+        cur += dense_interval if dense_until is not None and cur < dense_until else interval
     return times

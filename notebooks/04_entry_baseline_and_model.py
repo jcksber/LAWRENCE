@@ -85,8 +85,24 @@ _READ_COLUMNS = ["token_id", "assessment_time", "y_entry", "is_rug_clamped", *FE
 # into driver memory. entry_candidates is ~1.3M rows (vs. Silver's
 # ~10.75M), comfortably a single-node pandas job, but no reason to carry
 # dead weight either.
+# 2026-10-01: Gold v2 samples every minute for a token's first hour, so
+# entry_candidates can be 5-10x larger than v1's ~4.9M rows -- too much to
+# toPandas() on one driver. If it's over MAX_TRAIN_ROWS, keep a
+# deterministic subset of TOKENS (hash of token_id), each with its full
+# history -- never random rows, which would scatter a token's correlated
+# minute-by-minute samples across train/test folds unevenly.
+import math  # noqa: E402
+
+from pyspark.sql import functions as F  # noqa: E402
+
+MAX_TRAIN_ROWS = 8_000_000
+_total_rows = spark.table(GOLD_ENTRY_TABLE).count()
+TOKEN_SAMPLE_PCT = min(100, math.ceil(100 * MAX_TRAIN_ROWS / max(_total_rows, 1)))
+print(f"{GOLD_ENTRY_TABLE}: {_total_rows:,} rows -> keeping ~{TOKEN_SAMPLE_PCT}% of tokens")
+
 entry_df = (
     spark.table(GOLD_ENTRY_TABLE)
+    .filter(F.pmod(F.xxhash64("token_id"), F.lit(100)) < TOKEN_SAMPLE_PCT)
     .select(*_READ_COLUMNS)
     .toPandas()
 )

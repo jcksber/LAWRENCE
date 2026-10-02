@@ -32,7 +32,7 @@ import features.gold_input  # noqa: E402
 
 importlib.reload(features.gold_features)
 importlib.reload(features.gold_input)
-from features.gold_features import build_exit_rows, sample_assessment_times  # noqa: E402
+from features.gold_features import LABEL_HOLD_MINUTES, build_exit_rows, sample_assessment_times  # noqa: E402
 from features.gold_input import GOLD_INPUT_COLUMNS, gold_input  # noqa: E402
 
 # COMMAND ----------
@@ -85,7 +85,11 @@ _EXIT_SCHEMA = StructType([
     StructField("price_unit", StringType()),
     StructField("minutes_since_launch", DoubleType()),
     StructField("is_postgrad_at_t", BooleanType()),
-])
+]
+# 2026-10-01: one label column per horizon in LABEL_HOLD_MINUTES (5/15/60),
+# NULL where that horizon is censored. `y_exit` itself = HOLD_MINUTES (15).
++ [StructField(f"y_exit_{h}m", DoubleType()) for h in LABEL_HOLD_MINUTES]
+)
 _EXIT_SCHEMA_COLUMNS = [f.name for f in _EXIT_SCHEMA]
 
 # COMMAND ----------
@@ -152,7 +156,7 @@ def _process_token_group(pdf: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=_EXIT_SCHEMA_COLUMNS)
     out_rows = []
     ref = trades[0]
-    for t in sample_assessment_times(trades):
+    for t in sample_assessment_times(trades, launch_time=ref["launch_time"]):
         for row in build_exit_rows(
             token_id, t, trades,
             observed_until=ref["observed_until"], launch_time=ref["launch_time"],

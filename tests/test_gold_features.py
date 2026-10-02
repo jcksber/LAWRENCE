@@ -284,18 +284,19 @@ def test_censored_label_is_skipped_not_rug_clamped():
     # the token died: must be skipped, never clamped to -100%.
     bars = [_bar(m, 1.0) for m in range(0, 30)]
     t = T0 + timedelta(minutes=29)
-    assert build_entry_row("TOK", t, bars, observed_until=T0 + timedelta(minutes=60)) is None
-    assert build_exit_rows("TOK", t, bars, observed_until=T0 + timedelta(minutes=60)) == []
-    # Same data with no censoring bound -> the old rug-clamp behaviour.
-    row = build_entry_row("TOK", t, bars)
-    assert row["is_rug_clamped"] and row["y_entry"] == RUG_CLAMP_RETURN
+    assert build_entry_row("TOK", t, bars, hold_minutes=60, observed_until=T0 + timedelta(minutes=60)) is None
+    assert build_exit_rows("TOK", t, bars, hold_minutes=60, observed_until=T0 + timedelta(minutes=60)) == []
+    # Same data with no censoring bound: the token just went quiet ON THE
+    # CURVE -- no LP to pull, so the last price stands (2026-10-01), not -100%.
+    row = build_entry_row("TOK", t, bars, hold_minutes=60)
+    assert row["is_rug_clamped"] is False and row["y_entry"] == 0.0
 
 
 def test_graduated_token_gets_real_label_from_postgrad_bars():
     bars = [_bar(m, 1.0) for m in range(0, 10)] + [_bar(m, 3.0, phase="postgrad") for m in range(10, 120)]
     t = T0 + timedelta(minutes=9)
     row = build_entry_row(
-        "TOK", t, bars, observed_until=T0 + timedelta(hours=24), launch_time=T0
+        "TOK", t, bars, hold_minutes=60, observed_until=T0 + timedelta(hours=24), launch_time=T0
     )
     assert row["y_entry"] == 2.0 and row["is_rug_clamped"] is False
     assert row["minutes_since_launch"] == 9.0
@@ -308,3 +309,42 @@ def test_nan_volume_from_pandas_counts_as_zero():
     bars = [_bar(1, 1.0, volume_usd=float("nan")), _bar(2, 1.0, volume_usd=50.0)]
     f = trailing_activity_features(bars, T0 + timedelta(minutes=2))
     assert f["trailing_volume_usd"] == 50.0
+
+
+
+# ---- 2026-10-01: no rug-clamp on curve/postgrad, multi-horizon labels, dense sampling ----
+
+def test_quiet_curve_token_keeps_last_price_not_minus_100():
+    # pumps to 2.0, gets dumped to 0.5, then nobody trades for hours
+    bars = [_bar(0, 1.0), _bar(1, 2.0), _bar(2, 0.5)]
+    row = build_entry_row("TOK", T0 + timedelta(minutes=1), bars, hold_minutes=60)
+    assert row["is_rug_clamped"] is False
+    assert row["y_entry"] == (0.5 - 2.0) / 2.0  # the real dump, not an invented -100%
+
+
+def test_raw_trades_without_phase_keep_old_rug_clamp():
+    # AMM-style raw trades (no phase): liquidity CAN be pulled -> old rule.
+    trades = [_trade(0, "buy", 1.0, 10)]
+    row = build_entry_row("TOKEN123", T0, trades, hold_minutes=60)
+    assert row["is_rug_clamped"] is True and row["y_entry"] == RUG_CLAMP_RETURN
+
+
+def test_multi_horizon_labels_and_per_horizon_censoring():
+    bars = [_bar(m, 1.0 + m / 100) for m in range(0, 30)]
+    row = build_entry_row(
+        "TOK", T0, bars, hold_minutes=15, observed_until=T0 + timedelta(minutes=20)
+    )
+    assert abs(row["y_entry_5m"] - 0.05) < 1e-12
+    assert abs(row["y_entry_15m"] - 0.15) < 1e-12
+    assert row["y_entry_60m"] is None  # T+60 is past observed_until -> censored
+    assert row["y_entry"] == row["y_entry_15m"]
+
+
+def test_dense_sampling_first_hour_then_15_min():
+    bars = [_bar(0, 1.0), _bar(90, 1.0)]
+    times = sample_assessment_times(bars, launch_time=T0)
+    offsets = [(x - T0).total_seconds() / 60 for x in times]
+    assert offsets[:3] == [0, 1, 2]
+    assert 59 in offsets and 60 in offsets
+    assert offsets[offsets.index(60) + 1] == 75  # 15-min steps after the first hour
+    assert offsets[-1] == 90

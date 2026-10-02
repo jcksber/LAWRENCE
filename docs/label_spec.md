@@ -156,3 +156,25 @@ position history is the ground truth this substitutes for until it exists.
   clip. Still a placeholder cap, not a measured one — revisit once real
   liquidity-depth data exists to separate genuine big winners from
   unexecutable thin-pool noise.
+
+## 2026-10-01 changes (Jack approved)
+
+1. **No rug-clamp where liquidity can't be pulled.** The interim rule
+   "nothing trades near T+hold -> label = -100%" assumed an LP that can be
+   withdrawn. That's false on a bonding curve (SOL sits in the curve
+   program; you can always sell back at the curve price) and after
+   pump.fun / LaunchLab graduation (LP burned or locked). For records in
+   phase `curve` or `postgrad`, the exit price is the token's LAST price
+   at or before T+hold, with no staleness limit. The -100% clamp now only
+   applies where liquidity can actually be pulled (records with no phase,
+   i.e. raw AMM trades). Slippage on exiting a thin/dead market is real
+   but belongs in the backtest's execution-cost model, not the label.
+2. **Censoring is not a rug.** If T+hold is past the token's
+   `observed_until` (end of the data we pulled for it), that label is
+   NULL / the row is skipped -- never -100%.
+3. **Shorter primary horizon + several horizons.** `HOLD_MINUTES` (primary
+   `y_entry` / `y_exit`) is now 15, down from 60. Every row also carries
+   `y_entry_{5,15,60}m` (and `y_exit_*`), NULL where censored, so the
+   horizon can be chosen from data instead of guessed.
+4. **Denser sampling.** T is sampled every minute for a token's first hour
+   after launch, then every 15 minutes.
