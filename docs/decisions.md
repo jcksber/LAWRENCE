@@ -2109,3 +2109,48 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   correction didn't erase the LaunchLab result, but it rests on ~3 weeks
   of one platform and on tails. Next: stress-test the LaunchLab segments
   alone (ex-top-1%, first signal per token) before trusting any of it.
+- **Per-segment stress tests: the LaunchLab "edge" is a few tokens
+  (2026-10-03).** 10x cap, pooled over folds:
+  launchlab/usd EV +4.1% but ex-top-1% -4.0%, top 1% of trades = 195% of
+  profit, per-token EV -7.0%, only 19% of tokens profitable, ONE token =
+  41% of profit (57% within StonkFun/usd, 68% within non-StonkFun/usd).
+  ex-top-1% is negative in every fold for every segment. StonkFun/quote:
+  +1.3% -> ex-top-1% -4.2%, per-token -17.8%, 13% of tokens profitable.
+  pump.fun/usd: -1.3% -> ex-top-1% -9.6%, per-token -2.7%.
+  first-per-token stays positive pooled for launchlab/usd (+4.1%) but
+  fold 1's +42% is 62 trades; folds 3-4 (where the volume is) +1.5% /
+  +3.3%. Verdict: no segment shows an edge we can distinguish from luck
+  on one month of data. Dropping the top 1% is harsh for any memecoin
+  strategy (returns ARE tail-driven), but one token carrying 40-70% of a
+  segment's profit is not a repeatable result. The model ranks
+  (Spearman 0.2-0.3) but its best picks don't clear ~3% round-trip costs
+  at a fixed 15-minute hold.
+- **Cost estimate for more months of data (2026-10-03).** Jack agreed the
+  ex-top-1% test is harsh for a tail-driven strategy; the open question
+  is whether winners repeat, which needs more months. Estimates (rates
+  from measured runs: 00c ~780 credits/M trade rows, 00f PumpSwap ~22.7
+  credits/6h chunk, CPMM ~790/month): repeating the trade-level 00c pull
+  for pump.fun + LaunchLab is ~75-90k credits per month (~30-36 free
+  accounts, or ~$1.3k on Dune Plus), almost all of it pump.fun's ~108M
+  curve trades. But nothing downstream uses trade rows: Gold reads only
+  token_price_1m (1-minute bars), and Bronze has no trader_id anyway. So
+  the proposed route is to aggregate curve trades into 1-minute bars on
+  Dune (same pattern as 00f), which can also add per-bar trader stats
+  (n_traders, new wallets, top-buyer share) that trade-level Bronze never
+  had. Cost unknown until a 1-day cost test (~$1). Preferred window:
+  forward from 2026-09-13 (current LaunchLab regime: any-quote pools since
+  09-07, StonkFun), not backward.
+- **00g curve-bars cost test written (2026-10-03).** New
+  `src/ingestion/curve_bars.py`: Dune SQL that turns pump.fun and LaunchLab
+  curve trades into 1m bars (same OHLCV + quote-unit columns as
+  postgrad_bars) plus trader stats per bar: volume_buy_q, volume_sell_q,
+  max_trade_q, top_trader_share (largest wallet's share of the bar's
+  volume). Dust (<$0.01) is dropped on Dune since bars can't be
+  un-aggregated. pump.fun: pool_id = base mint (one curve per mint), quote
+  = WSOL. LaunchLab: base/quote from stg_swaps, joined on both mints (not
+  on project_program_id). Chunked on minute boundaries so every stat is
+  chunk-safe; "new wallet" counts are NOT included because they'd need
+  history across chunks. Notebook 00g: (1) trades/day since 09-13,
+  (2) pump.fun 1-day bars summary-only (compute cost), (3) LaunchLab
+  1-day summary, (4) pump.fun 1-hour full export (export cost),
+  (5) validation hour on 09-01 vs Silver token_price_1m. Not yet run.
