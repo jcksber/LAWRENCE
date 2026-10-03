@@ -106,7 +106,7 @@ def test_venue_fee_bps_maps_venue_and_phase():
 
     venues = pd.Series(["pumpdotfun", "pumpdotfun", "raydium_launchlab", "raydium_v4"])
     postgrad = pd.Series([False, True, False, None])
-    assert venue_fee_bps(venues, postgrad).tolist() == [125.0, 120.0, 100.0, 30.0]
+    assert venue_fee_bps(venues, postgrad).tolist() == [125.0, 120.0, 125.0, 30.0]
 
 
 def test_simulate_trades_accepts_per_row_fees():
@@ -126,3 +126,21 @@ def test_simulate_trades_scores_at_the_capturable_cap_by_default():
     assert r.ev_per_trade == pytest.approx(5.0)
     r100 = simulate_trades(y_true, enter_mask, strategy="t", fee_bps=0.0, slippage_bps=0.0, return_cap=100.0)
     assert r100.ev_per_trade == pytest.approx(25.0)
+
+
+def test_launchlab_curve_fee_bps_from_platform_config():
+    from backtest.walk_forward import launchlab_curve_fee_bps
+
+    # StonkFun's typical config: 1.0% platform + 0.5% creator + 0.25% protocol
+    assert launchlab_curve_fee_bps(10000, 5000) == 175.0
+    assert launchlab_curve_fee_bps(100, 100) == 27.0
+
+
+def test_venue_fee_bps_launchlab_override_curve_only():
+    from backtest.walk_forward import venue_fee_bps
+
+    venues = pd.Series(["raydium_launchlab", "raydium_launchlab", "raydium_launchlab", "pumpdotfun"])
+    postgrad = pd.Series([False, True, False, False])
+    override = pd.Series([175.0, 175.0, float("nan"), 175.0])
+    # curve row with a known fee uses it; post-grad, unknown, other venues don't
+    assert venue_fee_bps(venues, postgrad, override).tolist() == [175.0, 25.0, 125.0, 125.0]

@@ -201,6 +201,7 @@ SELECT
   baseMint AS base_mint,
   quoteMint AS quote_mint,
   CAST(NULL AS varchar) AS platform_name,
+  CAST(NULL AS varchar) AS platform_config,
   created_at
 FROM pumpswap_solana.pools
 WHERE created_at >= {_ts(window_start)}
@@ -219,6 +220,9 @@ SELECT
   base_token_mint AS base_mint,
   quote_token_mint AS quote_mint,
   max(platform_name) AS platform_name,
+  -- PlatformConfig account: sets the platform + creator fee on top of the
+  -- 0.25% protocol fee (see data/reference/launchlab_platform_configs.csv)
+  max(platform_config) AS platform_config,
   min(block_time) AS created_at
 FROM raydium_launchlab_v1.stg_swaps
 WHERE block_date >= DATE '{window_start.date()}'
@@ -286,6 +290,7 @@ def to_pool_row(r: dict[str, Any], ingested_at: datetime) -> dict[str, Any]:
         "base_mint": r["base_mint"],
         "quote_mint": r["quote_mint"],
         "platform_name": r.get("platform_name"),
+        "platform_config": r.get("platform_config"),
         "created_at": parse_dune_ts(r.get("created_at")),
         "source": "dune",
         "ingested_at": ingested_at,

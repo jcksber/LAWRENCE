@@ -68,16 +68,37 @@ DEFAULT_SLIPPAGE_BPS = 50.0
 VENUE_PHASE_FEE_BPS = {
     ("pumpdotfun", False): 125.0,
     ("pumpdotfun", True): 120.0,
-    ("raydium_launchlab", False): 100.0,
+    # 2026-10-03: 0.25% protocol + 1.0% platform fee (the near-universal
+    # platform rate in the on-chain configs); creator fee unknown here. Only
+    # a fallback -- notebook 04 passes each token's real config fee.
+    ("raydium_launchlab", False): 125.0,
     ("raydium_launchlab", True): 25.0,
 }
 
 
-def venue_fee_bps(dex_venue: pd.Series, is_postgrad: pd.Series) -> pd.Series:
+# LaunchLab's protocol trade fee (on-chain GlobalConfig trade_fee_rate =
+# 2500 millionths, confirmed via Dune 2026-10-03). Each launch's
+# PlatformConfig adds fee_rate + creator_fee_rate on top -- see
+# launchlab_curve_fee_bps and data/reference/launchlab_platform_configs.csv.
+LAUNCHLAB_PROTOCOL_FEE_BPS = 25.0
+
+
+def launchlab_curve_fee_bps(fee_rate: "float | pd.Series", creator_fee_rate: "float | pd.Series") -> "float | pd.Series":
+    """Per-side LaunchLab curve fee in bps from a PlatformConfig's rates
+    (both in millionths, as stored on-chain: 10000 = 1%)."""
+    return LAUNCHLAB_PROTOCOL_FEE_BPS + (fee_rate + creator_fee_rate) / 100
+
+
+def venue_fee_bps(
+    dex_venue: pd.Series, is_postgrad: pd.Series, launchlab_curve_bps: "pd.Series | None" = None
+) -> pd.Series:
     """Per-row fee in bps from (launch venue, is_postgrad_at_t); anything
-    unmapped falls back to DEFAULT_FEE_BPS."""
+    unmapped falls back to DEFAULT_FEE_BPS. `launchlab_curve_bps` (optional,
+    aligned to dex_venue's index) overrides the flat LaunchLab curve rate
+    with the row's own platform fee where known (non-null); post-graduation
+    rows and other venues ignore it."""
     postgrad = is_postgrad.fillna(False).astype(bool)
-    return pd.Series(
+    fees = pd.Series(
         [
             VENUE_PHASE_FEE_BPS.get((v, p), DEFAULT_FEE_BPS)
             for v, p in zip(dex_venue.astype(object), postgrad)
@@ -85,6 +106,10 @@ def venue_fee_bps(dex_venue: pd.Series, is_postgrad: pd.Series) -> pd.Series:
         index=dex_venue.index,
         dtype=float,
     )
+    if launchlab_curve_bps is not None:
+        use = (dex_venue.astype(object) == "raydium_launchlab") & ~postgrad & launchlab_curve_bps.notna()
+        fees[use] = launchlab_curve_bps[use].astype(float)
+    return fees
 
 
 def round_trip_cost(

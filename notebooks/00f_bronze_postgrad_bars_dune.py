@@ -104,7 +104,9 @@ RECOVER_EXECUTION_IDS: dict[str, str] = {}
 # v1 rows (USD-only, 62% unpriced) are removed first so there's exactly one
 # copy per bar. Note the progress key changed ("_v2"), so v1's 'success'
 # row doesn't cause this to be skipped.
-REPLACES_VENUE = {"bars_raydium_cpmm_v2": "raydium_cpmm"}
+# pools_launchlab_v2 (2026-10-03) re-pulls LaunchLab pools with the
+# platform_config account (per-pool platform/creator fee).
+REPLACES_VENUE = {"bars_raydium_cpmm_v2": "raydium_cpmm", "pools_launchlab_v2": "raydium_launchlab"}
 
 # COMMAND ----------
 
@@ -114,6 +116,7 @@ _POOLS_SCHEMA = StructType([
     StructField("base_mint", StringType()),
     StructField("quote_mint", StringType()),
     StructField("platform_name", StringType()),
+    StructField("platform_config", StringType()),  # 2026-10-03, LaunchLab only
     StructField("created_at", TimestampType()),
     StructField("source", StringType()),
     StructField("ingested_at", TimestampType()),
@@ -175,16 +178,18 @@ def _log_progress(job: str, chunk_start: str, chunk_end: str, status: str, rows_
 # existed lack the *_q / volume_quote columns. Add them (nullable) so
 # appends with the new schema don't fail. Rows already written keep NULLs
 # there -- fine for PumpSwap (0% USD-unpriced); CPMM is re-pulled (v2).
-if spark.catalog.tableExists(BARS_TABLE):
-    _existing = set(spark.table(BARS_TABLE).columns)
-    _missing = [f for f in _BARS_SCHEMA.fields if f.name not in _existing]
-    if _missing:
-        spark.sql(
-            f"ALTER TABLE {BARS_TABLE} ADD COLUMNS ("
-            + ", ".join(f"{f.name} {f.dataType.simpleString()}" for f in _missing)
-            + ")"
-        )
-        print(f"Added columns to {BARS_TABLE}: {[f.name for f in _missing]}")
+# 2026-10-03: same for the pools table (platform_config).
+for _table, _schema in ((BARS_TABLE, _BARS_SCHEMA), (POOLS_TABLE, _POOLS_SCHEMA)):
+    if spark.catalog.tableExists(_table):
+        _existing = set(spark.table(_table).columns)
+        _missing = [f for f in _schema.fields if f.name not in _existing]
+        if _missing:
+            spark.sql(
+                f"ALTER TABLE {_table} ADD COLUMNS ("
+                + ", ".join(f"{f.name} {f.dataType.simpleString()}" for f in _missing)
+                + ")"
+            )
+            print(f"Added columns to {_table}: {[f.name for f in _missing]}")
 
 done: set[tuple[str, str, str]] = set()
 if spark.catalog.tableExists(PROGRESS_TABLE):
@@ -198,7 +203,7 @@ print(f"{len(done)} chunk(s) already done -- will be skipped.")
 jobs = [
     ("pools_pumpswap", BACKFILL_WINDOW_START, BACKFILL_WINDOW_END,
      pumpswap_pools_sql(BACKFILL_WINDOW_START, BACKFILL_WINDOW_END), to_pool_row, _POOLS_SCHEMA, POOLS_TABLE),
-    ("pools_launchlab", BACKFILL_WINDOW_START, BACKFILL_WINDOW_END,
+    ("pools_launchlab_v2", BACKFILL_WINDOW_START, BACKFILL_WINDOW_END,
      launchlab_pools_sql(BACKFILL_WINDOW_START, BACKFILL_WINDOW_END), to_pool_row, _POOLS_SCHEMA, POOLS_TABLE),
     ("bars_raydium_cpmm_v2", BACKFILL_WINDOW_START, BACKFILL_WINDOW_END,
      cpmm_launchlab_bars_sql(BACKFILL_WINDOW_START, BACKFILL_WINDOW_END, HORIZON_HOURS), to_bar_row, _BARS_SCHEMA, BARS_TABLE),

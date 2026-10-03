@@ -54,7 +54,10 @@ def test_pool_sqls():
     assert "pumpswap_solana.pools" in pumpswap_pools_sql(T0, T1)
     ll = launchlab_pools_sql(T0, T1)
     assert "max(platform_name) AS platform_name" in ll
+    assert "max(platform_config) AS platform_config" in ll
     assert "GROUP BY 1, 2, 3, 4" in ll
+    # both pool queries return the same columns (one Bronze table)
+    assert "AS platform_config" in pumpswap_pools_sql(T0, T1)
 
 
 def test_to_bar_row_types():
@@ -96,6 +99,10 @@ def test_to_pool_row():
         INGESTED,
     )
     assert row["created_at"] == datetime(2026, 9, 1, 0, 0, 5, tzinfo=timezone.utc)
+    assert row["platform_config"] is None
+    ll = to_pool_row({"venue": "raydium_launchlab", "pool_id": "P", "base_mint": "B", "quote_mint": "Q",
+                      "platform_name": "StonkFun", "platform_config": "CFG", "created_at": None}, INGESTED)
+    assert ll["platform_config"] == "CFG"
 
 
 def test_quote_unit_price_columns_in_both_sqls():

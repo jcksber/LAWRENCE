@@ -2045,3 +2045,49 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   01b check #2 with the range ON had shown curve-only 1,047,405 (was
   1,182,968), postgrad-only 16,382 (was 13,950) -- graduates losing all
   curve trades, which is how this surfaced.
+- **01b after the dust fixes, explained (2026-10-03).** Tokens by phase:
+  curve+postgrad 20,621 (was 18,626), curve-only 1,061,515, postgrad-only
+  16,238, amm-only 44,567. Breakdown of pump.fun tokens with trades:
+  "no bars at all" 115,501 -- ALL dust-only (median 2 trades): spam, correctly
+  removed. "has curve" 1,033,353 -- none dust-only. "postgrad only" 15,626 --
+  only 1,961 dust-only, median 1 curve trade in the window: tokens launched
+  before 2026-08-14 that graduated in-window (we see only their final curve
+  buy, which shares the graduation minute with the first post-grad bar and
+  loses the same-minute tie). Previously some counted as curve+postgrad with
+  a fake launch_time; excluding them from entry candidates is correct.
+- **04 after dust fixes (2026-10-03).** Ranking signal unchanged:
+  Spearman 0.29 / 0.30 / 0.31 / 0.28 / 0.21, deciles monotone (d1 ~ -22%
+  -> d10 -1.1% to -3.7%; top decile still negative after costs).
+  Baselines at 10x: A -7.2% to -8.3%, B -8.8% to -10.1%. Model EV +0.1 /
+  -4.7 / -4.4 / +2.7 / +1.3%; top-1% +1.3 / -4.6 / -3.6 / +2.3 / +5.3%.
+  Stress: top 1% = 169-289% of profit, median -3.5% to -5.1%, ex-top-1%
+  -4.5% to -12.5%. pump.fun/quote segment gone (unit fix worked).
+  Segments: **pumpdotfun/usd (trusted) EV -1.26% vs base -8.14%** (51,328
+  trades, 8,666 tokens; per fold +0.2/-4.8/-4.9/+4.7/+0.1) -- the
+  earlier +0.44% was partly dust; the model lifts ~7 points but is
+  negative in absolute terms. raydium_launchlab/quote +1.36% (untrusted,
+  platform fees unmodelled). **raydium_launchlab/usd +3.98% vs base
+  -3.61%** (6,252 trades, 1,120 tokens; per fold -2.1/+9.0/+7.7/+7.3/
+  +3.6) -- the only segment positive in 4 of 5 folds, but small (one
+  month, ~1.1k tokens) and LaunchLab fees are a floor: third-party
+  platforms (StonkFun, letsbonk.fun, VOIDEX) add their own fees on top
+  of Raydium's 1%. Conclusion: no edge in the trusted pump.fun segment; a
+  possible edge in SOL-quoted LaunchLab that can't be trusted until
+  per-platform fees are verified and modelled.
+- **LaunchLab platform fees verified and modelled (2026-10-03).** On-chain
+  LaunchLab curve cost per side = protocol `trade_fee_rate` (GlobalConfig,
+  2500 millionths = 0.25%, confirmed via Dune create_config) + the launch's
+  PlatformConfig `fee_rate` + `creator_fee_rate` (millionths; caps 5% and
+  0.5%). The 182 configs (Dune, saved as
+  `data/reference/launchlab_platform_configs.csv`): StonkFun 121 of 131 at
+  1.0% + 0.5% creator; letsbonk.fun mostly 1.0% + 0-0.5%; Raydium 0.75%
+  early, 1.0% since Oct 2025; VOIDEX 0.01% + 0.01%. So a typical LaunchLab
+  curve side costs 1.25-1.75%, not the 1.0% modelled before -- the
+  launchlab segment EVs above were overstated by ~0.5-1.5 points per round
+  trip. Changes: 00f job `pools_launchlab_v2` re-pulls LaunchLab pools with
+  `platform_config` (replaces the old rows); notebook 04 joins token ->
+  config -> fee and passes it to `venue_fee_bps` (curve rows only; CPMM
+  post-grad stays 0.25%); fallback for unknown configs raised 1.00% ->
+  1.25%; segment tables now split by platform_name. Expected
+  launchlab/usd EV after this: roughly +2.5% to +3.5% (estimate, pending
+  the re-run).

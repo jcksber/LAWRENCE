@@ -64,7 +64,13 @@ import mlflow.lightgbm
 import pandas as pd
 
 from backtest.baselines import baseline_a_buy_everything, baseline_b_volume_momentum_filter
-from backtest.walk_forward import round_trip_cost, simulate_trades, venue_fee_bps, walk_forward_folds
+from backtest.walk_forward import (
+    launchlab_curve_fee_bps,
+    round_trip_cost,
+    simulate_trades,
+    venue_fee_bps,
+    walk_forward_folds,
+)
 from features.gold_features import CAPTURABLE_RETURN_CAP, winsorize_return
 from models.entry_model import (
     FEATURE_COLUMNS,
@@ -124,6 +130,47 @@ print(f"Loaded {len(entry_df):,} rows from {GOLD_ENTRY_TABLE}, "
 
 # COMMAND ----------
 
+# 2026-10-03: per-token LaunchLab curve fee. Each LaunchLab launch has a
+# PlatformConfig account that sets a platform fee + creator fee on top of
+# the 0.25% protocol fee (StonkFun / letsbonk mostly 1.0% + 0-0.5%; see
+# docs/decisions.md). Bronze pool_metadata carries the config per pool
+# (00f job pools_launchlab_v2); the config -> rates table is reference data
+# pulled once from Dune. Tokens with no known config get the flat 1.25%.
+POOL_METADATA_TABLE = "lawrence.bronze.pool_metadata"
+PLATFORM_CONFIGS_CSV = "../data/reference/launchlab_platform_configs.csv"
+
+_configs = pd.read_csv(PLATFORM_CONFIGS_CSV)
+_configs["creator_fee_rate"] = _configs["creator_fee_rate"].fillna(0)
+_pool_cols = set(spark.table(POOL_METADATA_TABLE).columns)
+if "platform_config" in _pool_cols:
+    _ll = (
+        spark.table(POOL_METADATA_TABLE)
+        .filter("venue = 'raydium_launchlab' AND platform_config IS NOT NULL")
+        .groupBy(F.col("base_mint").alias("token_id"))
+        .agg(F.max("platform_config").alias("platform_config"), F.max("platform_name").alias("platform_name"))
+        .toPandas()
+        .merge(_configs[["account_platform_config", "fee_rate", "creator_fee_rate"]],
+               left_on="platform_config", right_on="account_platform_config", how="left")
+    )
+    _ll["ll_curve_fee_bps"] = launchlab_curve_fee_bps(_ll["fee_rate"], _ll["creator_fee_rate"])
+    entry_df = entry_df.merge(_ll[["token_id", "platform_name", "ll_curve_fee_bps"]], on="token_id", how="left")
+else:
+    print(f"WARNING: {POOL_METADATA_TABLE} has no platform_config yet -- run 00f (pools_launchlab_v2). "
+          "Using the flat 1.25% LaunchLab curve fee.")
+    entry_df["platform_name"] = None
+    entry_df["ll_curve_fee_bps"] = float("nan")
+_llmask = entry_df["dex_venue"] == "raydium_launchlab"
+entry_df["platform_name"] = entry_df["platform_name"].where(_llmask).fillna("-")
+entry_df.loc[_llmask & (entry_df["platform_name"] == "-"), "platform_name"] = "unknown"
+print(f"LaunchLab rows with a known platform fee: {entry_df.loc[_llmask, 'll_curve_fee_bps'].notna().mean():.1%}")
+print(
+    entry_df[_llmask].groupby("platform_name")["ll_curve_fee_bps"]
+    .agg(rows="size", mean_fee_bps="mean", min_fee_bps="min", max_fee_bps="max")
+    .sort_values("rows", ascending=False).round(1).head(10).to_string()
+)
+
+# COMMAND ----------
+
 folds = walk_forward_folds(entry_df["assessment_time"], n_folds=N_WALK_FORWARD_FOLDS)
 print(f"{len(folds)} usable walk-forward folds (requested {N_WALK_FORWARD_FOLDS})")
 for i, (train_mask, test_mask) in enumerate(folds):
@@ -159,11 +206,11 @@ with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
         preds = score_candidates(last_model, X_test)
 
         # 2026-10-02: per-row fees by venue + phase (pump.fun curve 1.25%,
-        # fresh PumpSwap 1.20%, LaunchLab curve >=1%, CPMM 0.25%; see
+        # fresh PumpSwap 1.20%, LaunchLab curve 0.25% + platform fee, CPMM 0.25%; see
         # walk_forward.VENUE_PHASE_FEE_BPS) instead of one AMM-style 30 bps.
         # Used for BOTH the model's entry rule and the backtest that scores
         # every strategy, so they can't disagree about what a trade costs.
-        fees_bps = venue_fee_bps(test_df["dex_venue"], test_df["is_postgrad_at_t"])
+        fees_bps = venue_fee_bps(test_df["dex_venue"], test_df["is_postgrad_at_t"], test_df["ll_curve_fee_bps"])
         if i == 0:
             print(f"Mean round-trip cost on fold-0 test rows: {round_trip_cost(fees_bps).mean():.2%}")
 
@@ -192,7 +239,7 @@ with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
         _dec = pd.qcut(preds.rank(method="first"), 10, labels=False) + 1
         segment_base.append(
             test_df.assign(_net=_net)
-            .groupby(["dex_venue", "price_unit"], observed=True)["_net"]
+            .groupby(["dex_venue", "platform_name", "price_unit"], observed=True)["_net"]
             .agg(base_rows="size", base_ev_cap10="mean")
             .reset_index()
             .assign(fold=i)
@@ -206,7 +253,7 @@ with mlflow.start_run(run_name="phase3_entry_baseline_and_model"):
         _entered = strategies["lightgbm_model"]
         model_trades.append(
             test_df.loc[_entered, ["token_id", "assessment_time", "y_entry", "trailing_volume_usd",
-                                   "dex_venue", "price_unit", "is_postgrad_at_t"]]
+                                   "dex_venue", "platform_name", "price_unit", "is_postgrad_at_t"]]
             .assign(fold=i, round_trip=round_trip_cost(fees_bps)[_entered], pred=preds[_entered])
         )
 
@@ -299,8 +346,8 @@ print(liq.round(4).to_string())
 # MAGIC Split by launch venue x price unit. `usd` + `pumpdotfun` is the segment
 # MAGIC we trust most (SOL-quoted, Dune USD prices, fees verified). `quote`
 # MAGIC tokens (mostly StonkFun on LaunchLab) are priced in another token's
-# MAGIC units, have no USD volume, and pay platform fees we don't model, so
-# MAGIC their EV here is an UPPER bound. `base_ev_cap10` = buying every
+# MAGIC units and have no USD volume, so their EV here is less trustworthy.
+# MAGIC (2026-10-03: LaunchLab curve rows now pay their own platform fee.) `base_ev_cap10` = buying every
 # MAGIC candidate in that segment, the right yardstick per segment.
 
 # COMMAND ----------
@@ -308,7 +355,7 @@ print(liq.round(4).to_string())
 mt["net_cap10"] = _net(mt, 10.0)
 mt["zero_usd_volume"] = mt["trailing_volume_usd"].fillna(0) == 0
 seg = (
-    mt.groupby(["dex_venue", "price_unit"], observed=True)
+    mt.groupby(["dex_venue", "platform_name", "price_unit"], observed=True)
     .agg(
         trades=("net_cap10", "size"),
         unique_tokens=("token_id", "nunique"),
@@ -323,18 +370,18 @@ seg = (
 seg["share_of_trades"] = seg["trades"] / seg["trades"].sum()
 base = (
     pd.concat(segment_base, ignore_index=True)
-    .groupby(["dex_venue", "price_unit"], observed=True)
+    .groupby(["dex_venue", "platform_name", "price_unit"], observed=True)
     .apply(lambda g: pd.Series({
         "base_rows": g["base_rows"].sum(),
         "base_ev_cap10": (g["base_ev_cap10"] * g["base_rows"]).sum() / g["base_rows"].sum(),
     }), include_groups=False)
     .reset_index()
 )
-print(seg.merge(base, on=["dex_venue", "price_unit"], how="left").round(4).to_string(index=False))
+print(seg.merge(base, on=["dex_venue", "platform_name", "price_unit"], how="left").round(4).to_string(index=False))
 
 # Same split per fold, EV only -- is any segment's edge consistent across time?
 print(
-    mt.pivot_table(index=["dex_venue", "price_unit"], columns="fold", values="net_cap10", aggfunc="mean", observed=True)
+    mt.pivot_table(index=["dex_venue", "platform_name", "price_unit"], columns="fold", values="net_cap10", aggfunc="mean", observed=True)
     .round(4).to_string()
 )
 
