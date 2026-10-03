@@ -388,6 +388,73 @@ print(
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Stress tests per segment (2026-10-03)
+# MAGIC
+# MAGIC The pooled stress tests above are dominated by pump.fun (~half the
+# MAGIC trades). LaunchLab's +4% could be real or a few lucky tokens, so rerun
+# MAGIC the same checks on each segment alone, all at the 10x cap:
+# MAGIC - `ev_ex_top1pct`: drop the segment's own best 1% of trades.
+# MAGIC - `top1pct_share_of_pnl`: how much of the profit those trades are.
+# MAGIC - `ev_first_per_token`: only each token's first signal per fold.
+# MAGIC - `ev_per_token`: average each token's trades first, then average
+# MAGIC   tokens -- one token entered 50 times counts once.
+# MAGIC - `tokens_profitable`: share of tokens whose average trade was > 0.
+# MAGIC
+# MAGIC Real edge = stays positive ex-top-1%, first-per-token and per-token,
+# MAGIC in most folds. If it flips negative, it was a handful of tokens.
+
+# COMMAND ----------
+
+SEGMENTS = {
+    "pumpdotfun/usd": (mt["dex_venue"] == "pumpdotfun") & (mt["price_unit"] == "usd"),
+    "launchlab/usd (all)": (mt["dex_venue"] == "raydium_launchlab") & (mt["price_unit"] == "usd"),
+    "launchlab/usd StonkFun": (mt["dex_venue"] == "raydium_launchlab") & (mt["price_unit"] == "usd")
+    & (mt["platform_name"] == "StonkFun"),
+    "launchlab/usd non-StonkFun": (mt["dex_venue"] == "raydium_launchlab") & (mt["price_unit"] == "usd")
+    & (mt["platform_name"] != "StonkFun"),
+    "launchlab/quote StonkFun": (mt["dex_venue"] == "raydium_launchlab") & (mt["price_unit"] == "quote")
+    & (mt["platform_name"] == "StonkFun"),
+}
+
+
+def _stress(g, cap=10.0):
+    if g.empty:
+        return {}
+    net = _net(g, cap)
+    top = net >= net.quantile(0.99)
+    first = g.sort_values("assessment_time").drop_duplicates(["fold", "token_id"], keep="first")
+    per_token = net.groupby(g["token_id"]).mean()
+    return {
+        "trades": len(g),
+        "tokens": g["token_id"].nunique(),
+        "ev_cap10": net.mean(),
+        "median_net": net.median(),
+        "ev_ex_top1pct": net[~top].mean(),
+        "top1pct_share_of_pnl": net[top].sum() / net.sum() if net.sum() > 0 else np.nan,
+        "ev_first_per_token": _net(first, cap).mean(),
+        "ev_per_token": per_token.mean(),
+        "tokens_profitable": (per_token > 0).mean(),
+        # biggest single token's share of the segment's total profit
+        "top_token_share_of_pnl": net.groupby(g["token_id"]).sum().max() / net.sum() if net.sum() > 0 else np.nan,
+    }
+
+
+pooled = pd.DataFrame([{"segment": k, **_stress(mt[m])} for k, m in SEGMENTS.items()])
+print("All folds pooled (10x cap):")
+print(pooled.round(4).to_string(index=False))
+
+per_fold = pd.DataFrame([
+    {"segment": k, "fold": f, **_stress(g)}
+    for k, m in SEGMENTS.items()
+    for f, g in mt[m].groupby("fold")
+])
+for metric in ["trades", "ev_cap10", "ev_ex_top1pct", "ev_first_per_token", "ev_per_token"]:
+    print(f"\n{metric} by fold:")
+    print(per_fold.pivot_table(index="segment", columns="fold", values=metric).round(4).to_string())
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Reading this table
 # MAGIC
 # MAGIC - **If `lightgbm_model`'s `ev_per_trade` doesn't beat both baselines

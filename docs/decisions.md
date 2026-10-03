@@ -2091,3 +2091,21 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   1.25%; segment tables now split by platform_name. Expected
   launchlab/usd EV after this: roughly +2.5% to +3.5% (estimate, pending
   the re-run).
+- **04 with per-platform LaunchLab fees (2026-10-03).** 98.4% of LaunchLab
+  rows matched a config. Actual mean curve fee by rows: StonkFun 125 bps
+  (most volume is on its 1.0% + 0% creator config, despite most *configs*
+  being 1.0% + 0.5%), letsbonk.fun 125, Raydium 100 (old 0.75% config),
+  VOIDEX 27. Unmatched (Pairz, WTFO, tren.ch, GoBolt, Stocks Inu...) use the
+  1.25% fallback -- their configs weren't in the 182-row pull. pump.fun
+  results identical (fee change only touches LaunchLab rows).
+  raydium_launchlab/usd still ~+4% EV over ~6.1k trades (vs base ~-4%),
+  but it is NOT one consistent edge: StonkFun/usd (4,429 trades, 742
+  tokens) is -34% / +8.9% / +3.2% in folds 2-4 (it only exists from
+  Sept), median trade -6%, win rate 31% -- tail-driven; the earlier
+  fold 0/1 positives came from Raydium/letsbonk.fun, different platforms.
+  Every other platform has too few trades to read. StonkFun/quote (xStocks
+  etc.; quote moves little in 15 min, so roughly USD-like) +1.3% over 51.6k
+  trades vs base -2.6%, folds -11.9 / +1.2 / +1.4%. Conclusion: the fee
+  correction didn't erase the LaunchLab result, but it rests on ~3 weeks
+  of one platform and on tails. Next: stress-test the LaunchLab segments
+  alone (ex-top-1%, first signal per token) before trusting any of it.
