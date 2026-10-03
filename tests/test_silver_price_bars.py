@@ -109,7 +109,12 @@ def test_dust_and_impossible_curve_prices_are_dropped(spark):
         _trade("PUMP3", 2, 0, 9999.0, 1e-3, WSOL),  # not dust by size, but an impossible curve price
     ]
     rows = sorted(_run(spark, trades, [], []), key=lambda r: r.bar_start)
-    assert len(rows) == 1 and rows[0].high == 1.1  # only minute 0 survives
+    # dust trade (minute 1) is dropped. The curve-range rule is disabled
+    # (2026-10-03), so minute 2's price survives the trade filters; it is
+    # ~9000x the token's median, inside the 1000x band only if the median
+    # is high enough -- here the median is ~1.1, so 9999 is dropped too.
+    assert [r.bar_start.minute for r in rows] == [0]
+    assert rows[0].high == 1.1
 
 
 def test_sol_quoted_graduate_stays_usd_and_keeps_postgrad_bars(spark):

@@ -2032,3 +2032,16 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   denylist majors) -> always usd; coverage >= 95% still also qualifies.
   3 new Spark tests. Rebuild needed: 01b -> 02 -> 03 -> 04 (token_trades
   unchanged).
+- **Pump.fun curve price range disabled (2026-10-03).** Check before 02:
+  WSOL-quoted pump.fun curve trades -- not graduated 90.4M trades, dust
+  6.3%, below 2e-8 SOL 15.4%, above 6e-7 0.2%, p01 1.4e-10, p50 4.9e-8,
+  p99 3.0e-7; graduated 16.1M, dust 6.0%, below 25.5%, above 0.1%, p01
+  6.2e-11, p50 1.3e-7, p99 4.0e-7. A quarter of graduated tokens' trades
+  sit 100-1000x below the assumed launch price -- far too many to be dust,
+  so the "physical curve range" assumption is wrong for a real slice of
+  tokens (different curve parameters/decimals, or Dune unit differences).
+  `PUMP_CURVE_PRICE_SOL = None`; dust ($0.01) and the 1000x per-token
+  band remain. Open question logged: what are those low-priced trades?
+  01b check #2 with the range ON had shown curve-only 1,047,405 (was
+  1,182,968), postgrad-only 16,382 (was 13,950) -- graduates losing all
+  curve trades, which is how this surfaced.

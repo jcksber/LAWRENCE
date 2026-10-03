@@ -51,7 +51,13 @@ MIN_TRADE_USD = 0.01
 # A pump.fun bonding-curve price is physically bounded: ~2.8e-8 SOL/token
 # at launch (30 virtual SOL / 1.073B virtual tokens) up to ~4e-7 at
 # graduation. Padded so only impossible prices are removed.
-PUMP_CURVE_PRICE_SOL = (2.0e-8, 6.0e-7)
+# DISABLED 2026-10-03: in real data 25.5% of graduated tokens' (and 15.4% of
+# other tokens') non-dust curve trades fall BELOW this range -- p01 ~1e-10,
+# 100-1000x under the assumed launch price. Either some tokens run on
+# different curve parameters/decimals or Dune decodes some trades in other
+# units; until that's understood, a fixed physical range is not safe. Set to
+# a (low, high) tuple to re-enable.
+PUMP_CURVE_PRICE_SOL: tuple[float, float] | None = None
 WSOL = "So11111111111111111111111111111111111111112"
 # Backstop for everything the two rules above can't see (quote-only trades,
 # and post-graduation bars aggregated on Dune with dust inside them): drop
@@ -163,14 +169,13 @@ def trade_bars(trades_df: DataFrame, units_df: DataFrame) -> DataFrame:
     t = trades_df.join(units_df, "token_id", "inner")
     # Dust filters (2026-10-03, see constants above).
     pump_sol = (F.col("dex_venue") == "pumpdotfun") & (F.col("quote_token_id") == WSOL)
-    t = t.filter(
-        (F.col("amount_usd").isNull() | (F.col("amount_usd") >= F.lit(MIN_TRADE_USD)))
-        & (
+    t = t.filter(F.col("amount_usd").isNull() | (F.col("amount_usd") >= F.lit(MIN_TRADE_USD)))
+    if PUMP_CURVE_PRICE_SOL is not None:
+        t = t.filter(
             ~pump_sol
             | F.col("price_quote").isNull()
             | F.col("price_quote").between(PUMP_CURVE_PRICE_SOL[0], PUMP_CURVE_PRICE_SOL[1])
         )
-    )
     price = F.when(F.col("price_unit") == "usd", F.col("price_usd")).otherwise(
         F.when(F.col("quote_token_id") == F.col("primary_quote"), F.col("price_quote"))
     )
