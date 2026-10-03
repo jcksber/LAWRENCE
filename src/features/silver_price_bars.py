@@ -28,8 +28,36 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
+from features.silver_token_trades import EVM_QUOTE_DENYLIST, SOLANA_QUOTE_DENYLIST
+
 USD_COVERAGE_MIN = 0.95
 CURVE_VENUES = ["pumpdotfun", "raydium_launchlab"]
+
+# 2026-10-03: a token whose primary quote is one of these majors (SOL, USDC,
+# USDT, WETH) is ALWAYS priced in USD. Previously the unit came only from
+# USD coverage, and a graduated pump.fun token whose PumpSwap pool had
+# enough USD-unpriced trades fell under 95%, was switched to quote units,
+# and then lost all its PumpSwap bars (that pull has no quote-unit prices)
+# -- i.e. vanished at graduation again (5,337 tokens).
+USD_QUOTES = list(SOLANA_QUOTE_DENYLIST) + [a.lower() for a in EVM_QUOTE_DENYLIST]
+
+# 2026-10-03: dust filters (see docs/decisions.md). Trades of a few
+# lamports / raw token units give meaningless amount ratios -- e.g. exactly
+# 0.001 SOL/token from 1 lamport for 1 raw unit -- and one such trade sets a
+# bar's OHLC. 6.2% of pump.fun curve trades are under $0.01 (p05 $0.000135);
+# at $0.01 a trade is ~67k lamports, so rounding error is < 0.01%. Real
+# small trades above that (21% of pump.fun trades are under $1) are kept.
+MIN_TRADE_USD = 0.01
+# A pump.fun bonding-curve price is physically bounded: ~2.8e-8 SOL/token
+# at launch (30 virtual SOL / 1.073B virtual tokens) up to ~4e-7 at
+# graduation. Padded so only impossible prices are removed.
+PUMP_CURVE_PRICE_SOL = (2.0e-8, 6.0e-7)
+WSOL = "So11111111111111111111111111111111111111112"
+# Backstop for everything the two rules above can't see (quote-only trades,
+# and post-graduation bars aggregated on Dune with dust inside them): drop
+# prices more than this factor away from the token's own median. Dust spikes
+# seen were 3,000-30,000x off; a genuine 100x post-graduation run still fits.
+OUTLIER_BAND = 1000.0
 
 PRICE_COLUMNS = [
     "token_id",
@@ -109,26 +137,49 @@ def token_units(trades_df: DataFrame, canon_bars_df: DataFrame, pool_metadata_df
         .withColumn("primary_quote", F.coalesce("launch_quote", "top_quote", "bar_quote"))
         .withColumn(
             "price_unit",
-            F.when(F.col("usd_coverage") >= F.lit(USD_COVERAGE_MIN), F.lit("usd")).otherwise(F.lit("quote")),
+            F.when(
+                F.col("primary_quote").isin(USD_QUOTES)
+                | F.lower(F.col("primary_quote")).isin(USD_QUOTES)
+                | (F.col("usd_coverage") >= F.lit(USD_COVERAGE_MIN)),
+                F.lit("usd"),
+            ).otherwise(F.lit("quote")),
         )
     )
     return units.select("token_id", "primary_quote", "usd_coverage", "price_unit")
 
 
+def _within_band(df: DataFrame, col: str, band: float = OUTLIER_BAND) -> DataFrame:
+    """Keep rows whose `col` is within `band`x of the token's own median."""
+    med = df.groupBy("token_id").agg(F.percentile_approx(col, 0.5).alias("_med"))
+    return (
+        df.join(med, "token_id", "inner")
+        .filter((F.col(col) <= F.col("_med") * band) & (F.col(col) >= F.col("_med") / band))
+        .drop("_med")
+    )
+
+
 def trade_bars(trades_df: DataFrame, units_df: DataFrame) -> DataFrame:
     """silver.token_trades -> 1-minute bars in each token's chosen unit."""
     t = trades_df.join(units_df, "token_id", "inner")
+    # Dust filters (2026-10-03, see constants above).
+    pump_sol = (F.col("dex_venue") == "pumpdotfun") & (F.col("quote_token_id") == WSOL)
+    t = t.filter(
+        (F.col("amount_usd").isNull() | (F.col("amount_usd") >= F.lit(MIN_TRADE_USD)))
+        & (
+            ~pump_sol
+            | F.col("price_quote").isNull()
+            | F.col("price_quote").between(PUMP_CURVE_PRICE_SOL[0], PUMP_CURVE_PRICE_SOL[1])
+        )
+    )
     price = F.when(F.col("price_unit") == "usd", F.col("price_usd")).otherwise(
         F.when(F.col("quote_token_id") == F.col("primary_quote"), F.col("price_quote"))
     )
     # 2026-10-01: prices <= 0 are treated as missing. 01b's first run found
     # 306,057 bars with close <= 0 -- Dune reports amount_usd = 0 on dust
     # trades, so price_usd = 0 -- and a zero price breaks every return.
-    t = (
-        t.withColumn("_price", F.when(price > 0, price))
-        .filter(F.col("_price").isNotNull())
-        .withColumn("bar_start", F.date_trunc("minute", "trade_time"))
-    )
+    t = t.withColumn("_price", F.when(price > 0, price)).filter(F.col("_price").isNotNull())
+    t = _within_band(t, "_price")
+    t = t.withColumn("bar_start", F.date_trunc("minute", "trade_time"))
     in_primary = F.col("quote_token_id") == F.col("primary_quote")
     return (
         t.groupBy("token_id", "bar_start", "price_unit", "primary_quote")
@@ -170,6 +221,21 @@ def postgrad_bars(canon_bars_df: DataFrame, units_df: DataFrame) -> DataFrame:
         pick("low_usd", "low_q").alias("_l"),
         pick("close_usd", "close_q").alias("_c"),
     )
+    # 2026-10-03: these bars were aggregated on Dune with dust trades inside,
+    # so apply the per-token outlier band: drop bars whose close is out of
+    # band, and treat out-of-band open/high/low as missing (falls back to
+    # close-based values below).
+    b = _within_band(b.filter(F.col("_c").isNotNull()), "_c")
+    med = b.groupBy("token_id").agg(F.percentile_approx("_c", 0.5).alias("_med"))
+    b = b.join(med, "token_id", "inner")
+    for c in ("_o", "_h", "_l"):
+        b = b.withColumn(
+            c,
+            F.when(
+                (F.col(c) <= F.col("_med") * OUTLIER_BAND) & (F.col(c) >= F.col("_med") / OUTLIER_BAND),
+                F.col(c),
+            ),
+        )
     # If a zero-priced dust trade knocked out open/high/low but close is
     # valid, fall back to close-based values rather than drop the bar.
     o = F.coalesce("_o", "_c")

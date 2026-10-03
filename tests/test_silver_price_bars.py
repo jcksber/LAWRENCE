@@ -96,3 +96,37 @@ def test_zero_prices_are_missing_not_zero(spark):
     rows = sorted(_run(spark, trades, bars, []), key=lambda r: r.bar_start)
     assert all(r.close > 0 and r.low > 0 for r in rows)
     assert [r.close for r in rows] == [2.0, 3.0]  # the all-zero bar at minute 5 is dropped
+
+
+# ---- 2026-10-03: dust filters + unit-by-quote ----
+
+def test_dust_and_impossible_curve_prices_are_dropped(spark):
+    # price_quote here is SOL per token; pump.fun curve range ~2.8e-8 .. 4e-7
+    trades = [
+        _trade("PUMP3", 0, 1, 1.0, 3e-8, WSOL),
+        _trade("PUMP3", 0, 2, 1.1, 3.3e-8, WSOL),
+        dict(_trade("PUMP3", 1, 0, 9999.0, 1e-3, WSOL), amount_usd=0.000001),  # dust: < $0.01
+        _trade("PUMP3", 2, 0, 9999.0, 1e-3, WSOL),  # not dust by size, but an impossible curve price
+    ]
+    rows = sorted(_run(spark, trades, [], []), key=lambda r: r.bar_start)
+    assert len(rows) == 1 and rows[0].high == 1.1  # only minute 0 survives
+
+
+def test_sol_quoted_graduate_stays_usd_and_keeps_postgrad_bars(spark):
+    # curve trades fully USD-priced, but the PumpSwap pool is mostly USD-unpriced
+    # -> coverage < 95%. Before 2026-10-03 this flipped the token to quote units
+    # and dropped its PumpSwap bars (no quote-unit prices in that pull).
+    trades = [_trade("GRAD1", 0, 1, 1.0, 3e-8, WSOL)]
+    bars = [_bar("GRAD1", "pool", 5, 2.0, None, WSOL, n_trades=1000, n_unpriced=900)]
+    rows = sorted(_run(spark, trades, bars, []), key=lambda r: r.bar_start)
+    assert all(r.price_unit == "usd" for r in rows)
+    assert [r.phase for r in rows] == ["curve", "postgrad"]
+
+
+def test_postgrad_outlier_bar_dropped(spark):
+    trades = [_trade("GRAD2", 0, 1, 1.0, 3e-8, WSOL)]
+    bars = [_bar("GRAD2", "pool", m, 2.0, None, WSOL) for m in range(5, 10)] + [
+        _bar("GRAD2", "pool", 10, 2.0 * 30000, None, WSOL)  # dust-driven spike
+    ]
+    rows = _run(spark, trades, bars, [])
+    assert max(r.close for r in rows) == 2.0

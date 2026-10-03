@@ -1982,3 +1982,53 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   by segment. Purpose: find out whether the ~breakeven result comes from
   the trustworthy segment (pumpdotfun / usd) or from quote-unit tokens
   whose fees and prices we can't fully trust.
+- **Segment breakdown result (2026-10-02).** Model trades by launch venue x
+  price_unit (EV at 10x cap after costs vs the segment's buy-everything EV):
+  - pumpdotfun / usd -- the trusted segment: 49,420 trades (41%), 8,271
+    tokens, EV +0.44% vs base -8.91%, median -3.5%, win 12%. Per fold
+    +0.6 / -1.6 / -4.2 / +9.1 / -0.1%: ~breakeven on average, inconsistent.
+  - raydium_launchlab / quote: 60,212 trades (50%), 4,615 tokens, ~100%
+    zero USD volume, EV +0.61% vs base -2.11%; per fold -3.0 / -8.8 / -14.0
+    / +1.0 / +0.5%. Platform fees unmodelled -> true EV lower. Untrusted.
+  - raydium_launchlab / usd: 8,997 trades, 1,472 tokens, EV +1.97% vs base
+    -3.56%; per fold -3.3 / +7.9 / +8.6 / +1.7 / +1.6%. Most consistent, but
+    small and the LaunchLab fee is a floor.
+  - pumpdotfun / quote: 1,784 trades; base EV **+59.5%** over 67,679 rows --
+    impossible for buy-everything; almost certainly a data bug in how
+    quote-unit prices are built for pump.fun tokens that fall under the 95%
+    USD-coverage line. Investigate before trusting any quote-unit series.
+  Reading: the model's ranking adds ~9 points over buying everything in
+  the trusted segment, landing around zero -- no robust edge yet. Half its
+  trades sit in a segment we can't measure reliably.
+- **Root causes of the pump.fun/quote "+59%" anomaly (2026-10-02).**
+  Query A: those 5,337 tokens' 3.92M curve trades are fully USD-priced
+  (price_usd NULL share 0) and all quoted in WSOL. Query B: worst series
+  jump from ~3e-8 SOL/token (normal: a pump.fun curve spans ~2.8e-8 at
+  launch to ~4e-7 at graduation) to EXACTLY 0.001 or 0.000001, or drop to
+  ~1e-11. Two bugs:
+  1. **Dust trades set absurd prices.** Round values like 0.001 = 1
+     lamport / 1 raw token unit (1e-9 SOL / 1e-6 token): when a trade is a
+     few raw units, rounding makes amount ratios meaningless, and one such
+     trade in a minute sets that bar's high/low/close. This is not
+     specific to quote mode -- USD prices are the same ratio x SOL price,
+     so USD series can carry the same spikes, and they may explain part of
+     the "near-100x lottery winners" the model learned to chase.
+  2. **Graduated pump.fun tokens were pushed into quote mode.** Coverage
+     counts post-graduation bars; if the token's PumpSwap pool has
+     enough USD-unpriced trades, coverage < 95% -> price_unit = quote ->
+     its PumpSwap bars are then DROPPED (that pull has no quote-unit
+     prices) -> the token "vanishes at graduation" again. Explains
+     phases = curve only in Query B.
+- **Fixes for both bugs (Jack approved threshold, 2026-10-03).** Dust
+  sizing: pump.fun curve trades < $1 21.4%, < $0.10 8.9%, < $0.01 6.2%
+  (p05 $0.000135, median $7.44); LaunchLab < $0.01 1.7% (median $33.70).
+  $1 would drop real small trades; $0.01 (~67k lamports, rounding error
+  < 0.01%) only drops the broken ones. In silver_price_bars:
+  `MIN_TRADE_USD = 0.01`; pump.fun curve trades quoted in WSOL must have
+  price_quote within `PUMP_CURVE_PRICE_SOL = (2.0e-8, 6.0e-7)` (padded
+  physical curve range); `OUTLIER_BAND = 1000` per-token median band on
+  trade-bar prices and on post-grad bar closes (out-of-band open/high/low
+  -> missing, fall back to close). Unit rule: `USD_QUOTES` (the quote
+  denylist majors) -> always usd; coverage >= 95% still also qualifies.
+  3 new Spark tests. Rebuild needed: 01b -> 02 -> 03 -> 04 (token_trades
+  unchanged).
