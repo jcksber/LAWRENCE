@@ -139,3 +139,24 @@ WHERE phase = 'curve' AND venue = 'pumpdotfun'
   AND bar_start >= TIMESTAMP '{VALIDATE_HOUR:%Y-%m-%d %H:%M:%S}'
   AND bar_start <  TIMESTAMP '{(VALIDATE_HOUR + timedelta(hours=1)):%Y-%m-%d %H:%M:%S}'
 """))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Cell 6 (2026-10-04): CPMM post-graduation bars, ONE day, summary only
+# MAGIC
+# MAGIC 00f's window-2 CPMM job ran a fresh 2,500-credit key dry. The query is
+# MAGIC now rewritten (narrow columns, no OR join). Measure it on one day of
+# MAGIC graduations before re-running the 20-day job: multiply the credit
+# MAGIC delta by ~20 for the full window.
+
+# COMMAND ----------
+
+importlib.reload(postgrad_bars)
+from ingestion.postgrad_bars import cpmm_launchlab_bars_sql  # noqa: E402
+
+_run("CPMM bars, graduations on 1 day (summary)", f"""
+WITH bars AS ({cpmm_launchlab_bars_sql(SAMPLE_DAY, SAMPLE_DAY + timedelta(days=1), 24)})
+SELECT count(*) AS n_bars, count(DISTINCT base_mint) AS n_tokens, sum(n_trades) AS n_trades
+FROM bars
+""")

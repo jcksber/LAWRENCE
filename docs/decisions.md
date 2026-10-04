@@ -2192,3 +2192,13 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
     model learn "null = older data".
   - 02/03 `CURVE_DATA_END` -> 2026-10-03.
   Run order: 00f (window 2) -> 00h -> 01b -> 02 -> 03 -> 04.
+- **00f window-2 CPMM job ran a fresh 2,500-credit key dry (2026-10-04).**
+  0 rows; logged `partial`. My estimate (0.6-1.5k) scaled window 1's 790
+  credits by days and LaunchLab volume, but window 1's query was itself
+  inefficient: `SELECT t.*` over the wide `dex_solana.trades` and a join
+  on `m.mint IN (bought, sold)`, which can't be a hash join. Window 2 has
+  ~5x more LaunchLab mints, so the join cost grew much faster than the
+  volume. Suspected cause, not confirmed. Rewrote the CPMM query: narrow
+  column list, two equi-joins via UNION ALL (same rows). Same OR-join fix
+  for launchlab_curve_bars_sql (00g cell 3 cost 3.8x pump.fun per day).
+  Next: 00g cell 6 measures the CPMM query on one day before re-running.

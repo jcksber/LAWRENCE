@@ -38,7 +38,11 @@ def test_pumpswap_bars_sql_bounds_and_horizon():
 
 def test_cpmm_sql_uses_version_5_and_launchlab_mints():
     sql = cpmm_launchlab_bars_sql(T0, T1, horizon_hours=24)
-    assert "t.version = 5" in sql
+    assert "version = 5" in sql
+    # 2026-10-04: narrow column list + two equi-joins (no OR join, no t.*)
+    assert "m.mint IN (" not in sql
+    assert "JOIN ll_mints m ON m.mint = t.token_bought_mint_address" in sql
+    assert "JOIN ll_mints m ON m.mint = t.token_sold_mint_address" in sql
     assert "raydium_launchlab_v1.stg_swaps" in sql
     assert "g.first_trade + INTERVAL '24' HOUR" in sql
     assert "'raydium_cpmm' AS venue" in sql

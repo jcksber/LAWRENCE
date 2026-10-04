@@ -259,6 +259,7 @@ for i, (job, start, end, sql, mapper, schema, table) in enumerate(jobs, start=1)
             except Exception as rec_exc:
                 print(f"{tag}: could not recover execution {exec_id} ({rec_exc}) -- running fresh")
         if dune_rows is None:
+            print(f"{tag}: running on Dune ({datetime.now(timezone.utc):%H:%M:%S} UTC)...", flush=True)
             dune_rows = client.run_sql(sql)
     except DuneCreditsExhausted as exc:
         if exc.partial_rows and _replaces(job, start):

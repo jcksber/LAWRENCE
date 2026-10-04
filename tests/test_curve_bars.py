@@ -35,8 +35,9 @@ def test_pumpfun_sql_bounds_filters_and_sides():
 def test_launchlab_sql_uses_pool_mints_both_directions():
     sql = launchlab_curve_bars_sql(T0, T1)
     assert "raydium_launchlab_v1.stg_swaps" in sql
-    assert "t.token_bought_mint_address = p.base_mint AND t.token_sold_mint_address = p.quote_mint" in sql
-    assert "t.token_sold_mint_address = p.base_mint AND t.token_bought_mint_address = p.quote_mint" in sql
+    assert "ON t.token_bought_mint_address = p.base_mint AND t.token_sold_mint_address = p.quote_mint" in sql
+    assert "ON t.token_sold_mint_address = p.base_mint AND t.token_bought_mint_address = p.quote_mint" in sql
+    assert ") OR (" not in sql  # no OR join (2026-10-04)
     assert "project = 'raydium_launchlab' AND t.version = 1" in sql
 
 

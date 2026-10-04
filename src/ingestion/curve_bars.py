@@ -136,36 +136,49 @@ WITH pools AS (
   WHERE block_date >= DATE '{chunk_start.date()}'
     AND block_date <= DATE '{chunk_end.date()}'
 ),
-x AS (
-  SELECT
-    p.pool_id,
-    p.base_mint,
-    p.quote_mint,
-    t.block_time,
-    {_ORDER_KEY} AS order_key,
-    t.token_bought_mint_address = p.base_mint AS is_buy,
-    t.trader_id,
-    t.amount_usd,
-    CASE
-      WHEN t.token_bought_mint_address = p.base_mint THEN t.amount_usd / NULLIF(t.token_bought_amount, 0)
-      ELSE t.amount_usd / NULLIF(t.token_sold_amount, 0)
-    END AS price,
-    CASE
-      WHEN t.token_bought_mint_address = p.base_mint THEN t.token_sold_amount / NULLIF(t.token_bought_amount, 0)
-      ELSE t.token_bought_amount / NULLIF(t.token_sold_amount, 0)
-    END AS price_q,
-    CASE
-      WHEN t.token_bought_mint_address = p.base_mint THEN t.token_sold_amount
-      ELSE t.token_bought_amount
-    END AS quote_amount
+ll AS (
+  SELECT block_time, block_slot, tx_index, outer_instruction_index, trader_id, amount_usd,
+         token_bought_mint_address, token_sold_mint_address, token_bought_amount, token_sold_amount
   FROM dex_solana.trades t
-  JOIN pools p
-    ON (t.token_bought_mint_address = p.base_mint AND t.token_sold_mint_address = p.quote_mint)
-    OR (t.token_sold_mint_address = p.base_mint AND t.token_bought_mint_address = p.quote_mint)
   WHERE t.project = 'raydium_launchlab' AND t.version = 1
     AND t.block_time >= {_ts(chunk_start)}
     AND t.block_time <  {_ts(chunk_end)}
     AND {_not_dust()}
+),
+-- 2026-10-04: two equi-joins (buy side, sell side) instead of one OR join,
+-- which can't be hash-joined. Same rows (the two conditions are disjoint).
+legs AS (
+  SELECT t.*, p.pool_id, p.base_mint, p.quote_mint, true AS is_buy
+  FROM ll t JOIN pools p
+    ON t.token_bought_mint_address = p.base_mint AND t.token_sold_mint_address = p.quote_mint
+  UNION ALL
+  SELECT t.*, p.pool_id, p.base_mint, p.quote_mint, false AS is_buy
+  FROM ll t JOIN pools p
+    ON t.token_sold_mint_address = p.base_mint AND t.token_bought_mint_address = p.quote_mint
+),
+x AS (
+  SELECT
+    t.pool_id,
+    t.base_mint,
+    t.quote_mint,
+    t.block_time,
+    {_ORDER_KEY} AS order_key,
+    t.is_buy,
+    t.trader_id,
+    t.amount_usd,
+    CASE
+      WHEN t.is_buy THEN t.amount_usd / NULLIF(t.token_bought_amount, 0)
+      ELSE t.amount_usd / NULLIF(t.token_sold_amount, 0)
+    END AS price,
+    CASE
+      WHEN t.is_buy THEN t.token_sold_amount / NULLIF(t.token_bought_amount, 0)
+      ELSE t.token_bought_amount / NULLIF(t.token_sold_amount, 0)
+    END AS price_q,
+    CASE
+      WHEN t.is_buy THEN t.token_sold_amount
+      ELSE t.token_bought_amount
+    END AS quote_amount
+  FROM legs t
 )
 {_curve_bars_select('raydium_launchlab')}"""
 

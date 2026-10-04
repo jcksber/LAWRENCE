@@ -148,13 +148,26 @@ WITH ll_mints AS (
   WHERE block_date >= DATE '{window_start.date()}'
     AND block_date <  DATE '{window_end.date()}'
 ),
+cpmm AS (
+  -- Only the columns used below: credits scale with data scanned, and
+  -- dex_solana.trades is wide (2026-10-04: SELECT t.* + an OR-join ran a
+  -- fresh 2,500-credit key dry on the 20-day window).
+  SELECT project_program_id, block_time, block_slot, tx_index, outer_instruction_index,
+         token_bought_mint_address, token_sold_mint_address,
+         token_bought_amount, token_sold_amount, amount_usd, trader_id
+  FROM dex_solana.trades
+  WHERE project = 'raydium' AND version = {CPMM_VERSION}
+    AND block_time >= {_ts(window_start)}
+    AND block_time <  {_ts(window_end)} + INTERVAL '{horizon_hours}' HOUR
+),
 cp AS (
+  -- Two equi-joins instead of `mint IN (bought, sold)`: an OR join can't be
+  -- hash-joined and degrades to a nested loop. Same rows as before.
   SELECT t.*, m.mint AS base_mint
-  FROM dex_solana.trades t
-  JOIN ll_mints m ON m.mint IN (t.token_bought_mint_address, t.token_sold_mint_address)
-  WHERE t.project = 'raydium' AND t.version = {CPMM_VERSION}
-    AND t.block_time >= {_ts(window_start)}
-    AND t.block_time <  {_ts(window_end)} + INTERVAL '{horizon_hours}' HOUR
+  FROM cpmm t JOIN ll_mints m ON m.mint = t.token_bought_mint_address
+  UNION ALL
+  SELECT t.*, m.mint AS base_mint
+  FROM cpmm t JOIN ll_mints m ON m.mint = t.token_sold_mint_address
 ),
 grad AS (
   SELECT project_program_id AS pool_id, base_mint, min(block_time) AS first_trade

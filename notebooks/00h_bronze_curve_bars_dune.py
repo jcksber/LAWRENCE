@@ -156,6 +156,7 @@ for i, (job, start, end, sql) in enumerate(jobs, start=1):
     ran += 1
 
     try:
+        print(f"{tag}: running on Dune ({datetime.now(timezone.utc):%H:%M:%S} UTC)...", flush=True)
         dune_rows = client.run_sql(sql)
     except DuneCreditsExhausted as exc:
         salvaged = _write([to_curve_bar_row(r, ingested_at) for r in exc.partial_rows]) if exc.partial_rows else 0
