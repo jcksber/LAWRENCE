@@ -135,3 +135,28 @@ def test_postgrad_outlier_bar_dropped(spark):
     ]
     rows = _run(spark, trades, bars, [])
     assert max(r.close for r in rows) == 2.0
+
+
+_CURVE_COLS = _BAR_COLS + ", volume_buy_q double, volume_sell_q double, max_trade_q double, top_trader_share double"
+
+
+def test_dune_curve_bars_continue_the_curve_with_flow_stats(spark):
+    # 2026-10-04: a token with Silver curve trades in the old window and 00h
+    # Dune curve bars after it -> one continuous 'curve' series, flow stats
+    # from both sources (top_trader_share only from Dune).
+    trades = [_trade("PUMP3", 0, 5, 1.0, 0.01, WSOL)]
+    curve = [dict(_bar("PUMP3", "PUMP3", 3, 1.5, 0.015, WSOL, n_trades=4, venue="pumpdotfun"),
+                  volume_buy_q=0.7, volume_sell_q=0.3, max_trade_q=0.5, top_trader_share=0.6)]
+    rows = sorted(
+        build_token_price_1m(
+            spark.createDataFrame(trades, _TRADE_COLS),
+            spark.createDataFrame([], _BAR_COLS),
+            spark.createDataFrame([], _POOL_COLS),
+            spark.createDataFrame(curve, _CURVE_COLS),
+        ).collect(),
+        key=lambda r: r.bar_start,
+    )
+    assert [r.phase for r in rows] == ["curve", "curve"]
+    assert rows[0].volume_buy_q == 1.0 and rows[0].top_trader_share is None  # from Silver trades
+    assert rows[1].close == 1.5 and rows[1].top_trader_share == 0.6 and rows[1].volume_buy_q == 0.7
+    assert all(r.price_unit == "usd" for r in rows)

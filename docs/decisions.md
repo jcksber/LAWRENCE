@@ -2154,3 +2154,41 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   (2) pump.fun 1-day bars summary-only (compute cost), (3) LaunchLab
   1-day summary, (4) pump.fun 1-hour full export (export cost),
   (5) validation hour on 09-01 vs Silver token_price_1m. Not yet run.
+- **00g results (2026-10-03): curve bars on Dune validated and cheap.**
+  Dune has full days through 2026-10-02 (20-day forward window from
+  09-13): pump.fun 74.5M curve trades (3.7M/day, same as before),
+  LaunchLab 11.5M (573k/day, ~5x the Aug-Sep month). Credits: pump.fun
+  1-day bars summary-only 5.8 (189,798 bars, 41,725 tokens, 2.62M
+  non-dust trades); LaunchLab 1-day 21.8 (81,443 bars, 11,111 tokens,
+  731k trades, 37% without USD price -- quote prices cover them); 1 hour
+  of pump.fun bars exported 8.6 for 7,073 bars (~1,200 credits/M exported
+  bars -- export, not compute, is the cost). Validation hour 2026-09-01
+  12:00 vs Silver token_price_1m curve bars: 9,077 vs 9,040 bars, 2,753
+  vs 2,731 tokens, 140,733 vs 139,476 trades (all within 1%; Silver keeps
+  one pool per token and drops out-of-band prices). Estimated full
+  20-day pull: pump.fun ~4.7k + LaunchLab ~2.4k + post-grad (PumpSwap
+  ~1.8k, CPMM ~1.5-3k) = ~10.5-12k credits (~$525-600 pay-as-you-go,
+  inside one month of Plus, ~5 free-tier allowances), vs ~67k for raw
+  trades.
+- **Forward window 2026-09-13 to 2026-10-03 wired through (2026-10-04).**
+  - New `notebooks/00h_bronze_curve_bars_dune.py` -> `bronze.curve_bars_1m`
+    (+ `_curve_bars_progress`): 100 chunks (pump.fun 6h, LaunchLab daily,
+    interleaved by day), same resumable/402-salvage rules as 00f,
+    `MAX_CHUNKS = 2` for the first run.
+  - 00f now loops over `WINDOWS` (window 1 = old, all done; window 2 =
+    forward). Fixed a trap: `REPLACES_VENUE` deletes now apply to window 1
+    only -- run on window 2 they would have wiped all of window 1's
+    LaunchLab pools / CPMM bars. A LaunchLab pool trading in both windows
+    gets two pool rows; a new cell dedupes pool_metadata to one row per
+    (venue, pool_id) (earliest created_at). CPMM pools graduated late in
+    window 1 get a late anchor in window 2, so some bars repeat; Silver's
+    dedupe_bars keeps one.
+  - Silver `token_price_1m`: `build_token_price_1m` takes optional curve
+    bars (phase 'curve', same unit/outlier rules as post-grad bars) and
+    gains flow columns volume_buy_q, volume_sell_q, max_trade_q,
+    top_trader_share. Trade-built bars fill all but top_trader_share;
+    post-grad bars have none yet. Caveat for features: these are null
+    for most of window 1, so any feature built on them must not let the
+    model learn "null = older data".
+  - 02/03 `CURVE_DATA_END` -> 2026-10-03.
+  Run order: 00f (window 2) -> 00h -> 01b -> 02 -> 03 -> 04.

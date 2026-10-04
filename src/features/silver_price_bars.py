@@ -5,6 +5,9 @@ stitching together everything we know about it:
 - its trades in `silver.token_trades` (bonding curve on pumpdotfun /
   raydium_launchlab -> phase 'curve'; ordinary AMMs like raydium_v4 /
   uniswap_v3_base -> phase 'amm'), rolled up to 1-minute bars here; and
+- from 2026-09-13 on, its curve bars from `bronze.curve_bars_1m` (pump.fun /
+  LaunchLab, aggregated to 1 minute ON Dune by notebook 00h -- raw curve
+  trades past the first month were too expensive) -> phase 'curve';
 - its post-graduation bars from `bronze.postgrad_bars_1m` (PumpSwap /
   Raydium CPMM, already 1-minute on Dune) -> phase 'postgrad', taken from
   ONE canonical pool per token (the pool with the most trades; ~74k of
@@ -80,10 +83,19 @@ PRICE_COLUMNS = [
     "n_trades",
     "n_buys",
     "n_traders",
+    # 2026-10-04: per-bar flow stats. Quote units, only when the bar's quote
+    # is the token's primary quote. Dune curve bars (from 2026-09-13) have
+    # all four; trade bars from Silver trades have all but top_trader_share
+    # (no trader id in Bronze); post-graduation bars have none yet.
+    "volume_buy_q",
+    "volume_sell_q",
+    "max_trade_q",
+    "top_trader_share",
     "phase",
     "venue",
     "pool_id",
 ]
+FLOW_COLUMNS = ["volume_buy_q", "volume_sell_q", "max_trade_q", "top_trader_share"]
 
 
 def dedupe_bars(bars_df: DataFrame) -> DataFrame:
@@ -195,6 +207,9 @@ def trade_bars(trades_df: DataFrame, units_df: DataFrame) -> DataFrame:
             F.max_by("_price", "trade_time").alias("close"),
             F.sum("amount_usd").alias("volume_usd"),
             F.sum(F.when(in_primary, F.col("quote_amount"))).alias("volume_quote"),
+            F.sum(F.when(in_primary & (F.col("side") == "buy"), F.col("quote_amount"))).alias("volume_buy_q"),
+            F.sum(F.when(in_primary & (F.col("side") != "buy"), F.col("quote_amount"))).alias("volume_sell_q"),
+            F.max(F.when(in_primary, F.col("quote_amount"))).alias("max_trade_q"),
             F.count("*").alias("n_trades"),
             F.count(F.when(F.col("side") == "buy", 1)).alias("n_buys"),
             F.concat_ws(",", F.array_sort(F.collect_set("dex_venue"))).alias("venue"),
@@ -204,13 +219,18 @@ def trade_bars(trades_df: DataFrame, units_df: DataFrame) -> DataFrame:
             F.when(F.col("venue").isin(CURVE_VENUES), F.lit("curve")).otherwise(F.lit("amm")),
         )
         .withColumn("n_traders", F.lit(None).cast("long"))  # Bronze trades carry no trader id
+        .withColumn("top_trader_share", F.lit(None).cast("double"))
         .withColumn("pool_id", F.lit(None).cast("string"))
         .withColumnRenamed("primary_quote", "quote_token_id")
     )
 
 
-def postgrad_bars(canon_bars_df: DataFrame, units_df: DataFrame) -> DataFrame:
-    """Canonical post-graduation bars in each token's chosen unit."""
+def postgrad_bars(canon_bars_df: DataFrame, units_df: DataFrame, phase: str = "postgrad") -> DataFrame:
+    """Dune-aggregated bars (canonical post-graduation pool, or -- with
+    phase='curve' -- 00h's curve bars) in each token's chosen unit."""
+    for c in FLOW_COLUMNS:  # postgrad_bars_1m has no flow stats (yet)
+        if c not in canon_bars_df.columns:
+            canon_bars_df = canon_bars_df.withColumn(c, F.lit(None).cast("double"))
     b = canon_bars_df.withColumnRenamed("base_mint", "token_id").join(units_df, "token_id", "inner")
     is_usd = F.col("price_unit") == "usd"
     same_quote = F.col("quote_mint") == F.col("primary_quote")
@@ -262,7 +282,11 @@ def postgrad_bars(canon_bars_df: DataFrame, units_df: DataFrame) -> DataFrame:
             "n_trades",
             "n_buys",
             "n_traders",
-            F.lit("postgrad").alias("phase"),
+            F.when(same_quote, F.col("volume_buy_q")).alias("volume_buy_q"),
+            F.when(same_quote, F.col("volume_sell_q")).alias("volume_sell_q"),
+            F.when(same_quote, F.col("max_trade_q")).alias("max_trade_q"),
+            "top_trader_share",
+            F.lit(phase).alias("phase"),
             "venue",
             "pool_id",
         )
@@ -274,14 +298,24 @@ def build_token_price_1m(
     trades_df: DataFrame,
     bars_df: DataFrame,
     pool_metadata_df: DataFrame,
+    curve_bars_df: DataFrame | None = None,
 ) -> DataFrame:
     """All inputs -> lawrence.silver.token_price_1m (PRICE_COLUMNS).
 
-    If a token has both a trade bar and a post-graduation bar in the same
-    minute (graduation minute), the one with more trades wins."""
+    `curve_bars_df` (optional, bronze.curve_bars_1m): curve bars built on
+    Dune for dates after the trade-level backfill. If a token has two bars
+    in the same minute (graduation minute, or a window boundary), the one
+    with more trades wins."""
     canon = canonical_bars(dedupe_bars(bars_df))
-    units = token_units(trades_df, canon, pool_metadata_df)
+    curve = dedupe_bars(curve_bars_df) if curve_bars_df is not None else None
+    cov_bars = canon
+    if curve is not None:
+        _cols = ["base_mint", "n_trades", "n_unpriced", "quote_mint"]
+        cov_bars = canon.select(*_cols).unionByName(curve.select(*_cols))
+    units = token_units(trades_df, cov_bars, pool_metadata_df)
     both = trade_bars(trades_df, units).unionByName(postgrad_bars(canon, units))
+    if curve is not None:
+        both = both.unionByName(postgrad_bars(curve, units, phase="curve"))
     w = Window.partitionBy("token_id", "bar_start").orderBy(F.desc("n_trades"), "phase")
     return (
         both.withColumn("_rn", F.row_number().over(w))

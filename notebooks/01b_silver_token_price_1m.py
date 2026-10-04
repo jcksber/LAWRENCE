@@ -31,14 +31,20 @@ spark.conf.set("spark.sql.session.timeZone", "UTC")
 TRADES_TABLE = "lawrence.silver.token_trades"
 BARS_TABLE = "lawrence.bronze.postgrad_bars_1m"
 POOLS_TABLE = "lawrence.bronze.pool_metadata"
+# 2026-10-04: curve bars built on Dune for 2026-09-13 onward (notebook 00h).
+CURVE_BARS_TABLE = "lawrence.bronze.curve_bars_1m"
 PRICE_TABLE = "lawrence.silver.token_price_1m"
 
 # COMMAND ----------
 
+_curve = spark.table(CURVE_BARS_TABLE) if spark.catalog.tableExists(CURVE_BARS_TABLE) else None
+if _curve is None:
+    print(f"WARNING: {CURVE_BARS_TABLE} not found -- building from trades only (run 00h first).")
 price_df = build_token_price_1m(
     spark.table(TRADES_TABLE),
     spark.table(BARS_TABLE),
     spark.table(POOLS_TABLE),
+    _curve,
 )
 (
     price_df.write.format("delta")
@@ -69,6 +75,16 @@ display(
         F.max("bar_start").alias("max_bar"),
     )
     .orderBy("price_unit", "phase")
+)
+
+# 1b. 2026-10-04: curve coverage by day -- no gap at 2026-09-13, where the
+#     source switches from Silver trades to 00h's Dune bars.
+display(
+    p.filter("phase = 'curve' AND bar_start >= '2026-09-06' AND bar_start < '2026-09-20'")
+    .groupBy("trade_date", "venue")
+    .agg(F.count("*").alias("bars"), F.countDistinct("token_id").alias("tokens"),
+         F.sum("n_trades").alias("trades"), F.count("top_trader_share").alias("bars_with_trader_stats"))
+    .orderBy("trade_date", "venue")
 )
 
 # 2. The point of the whole exercise: how many tokens now have a
