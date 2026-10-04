@@ -42,8 +42,16 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.append("../src")
 from ingestion.dune_client import DuneClient, DuneCreditsExhausted  # noqa: E402
+import importlib  # noqa: E402
+
+import ingestion.postgrad_bars  # noqa: E402
+
+importlib.reload(ingestion.postgrad_bars)
 from ingestion.postgrad_bars import (  # noqa: E402
+    cpmm_first_trades_sql,
     cpmm_launchlab_bars_sql,
+    cpmm_pool_bars_sql,
+    to_first_trade_row,
     launchlab_pools_sql,
     pumpswap_bars_sql,
     pumpswap_pools_sql,
@@ -51,6 +59,7 @@ from ingestion.postgrad_bars import (  # noqa: E402
     to_pool_row,
 )
 from pyspark.sql import Row  # noqa: E402
+from pyspark.sql import functions as F  # noqa: E402
 from pyspark.sql.types import (  # noqa: E402
     DoubleType,
     LongType,
@@ -81,10 +90,16 @@ PUMPSWAP_CHUNK_HOURS = 6  # ~54k bars/chunk at 00e's measured rate
 
 # 1 = measure one chunk first. None = run everything not yet done.
 MAX_PUMPSWAP_CHUNKS = 1
+# 2026-10-04: same guard for window 2's per-day CPMM bars (step 2). Step 1
+# (20 small first-trade queries) always runs in full first.
+MAX_CPMM_BAR_DAYS = 1
 
 POOLS_TABLE = "lawrence.bronze.pool_metadata"
 BARS_TABLE = "lawrence.bronze.postgrad_bars_1m"
 PROGRESS_TABLE = "lawrence.bronze._postgrad_progress"
+# 2026-10-04: per-day CPMM first trades for window 2 (step 1 of the split
+# CPMM pull -- see postgrad_bars.cpmm_first_trades_sql).
+FIRST_TRADES_TABLE = "lawrence.bronze._cpmm_first_trades"
 
 WRITE_BATCH_SIZE = 5_000  # same driver-heap reasoning as 00c
 
@@ -131,6 +146,15 @@ _POOLS_SCHEMA = StructType([
     StructField("platform_config", StringType()),  # 2026-10-03, LaunchLab only
     StructField("created_at", TimestampType()),
     StructField("source", StringType()),
+    StructField("ingested_at", TimestampType()),
+])
+
+_FIRST_TRADES_SCHEMA = StructType([
+    StructField("pool_id", StringType()),
+    StructField("base_mint", StringType()),
+    StructField("first_trade", TimestampType()),
+    StructField("n_trades", LongType()),
+    StructField("day", StringType()),
     StructField("ingested_at", TimestampType()),
 ])
 
@@ -212,6 +236,41 @@ print(f"{len(done)} chunk(s) already done -- will be skipped.")
 # COMMAND ----------
 
 # Per window, ordered cheapest-first. Each entry: (job, chunk_start, chunk_end, sql, mapper, schema, table)
+def _cpmm_day_bars_sql(day_start: datetime, day_end: datetime):
+    """Step 2 SQL for one graduation day, built at run time from step 1's
+    table. A pool's graduation = its earliest first trade across ALL days;
+    mints that already have window-1 CPMM bars are skipped (they graduated
+    before window 2). Returns None if no pool graduated that day."""
+    w2_days = {(d, d + timedelta(days=1)) for d in _days(*WINDOWS[1])}
+    missing = [d for d, e in w2_days if ("cpmm_first_trades", d.isoformat(), e.isoformat()) not in done]
+    if missing:
+        raise RuntimeError(f"{len(missing)} cpmm_first_trades day(s) not done yet -- graduation times would be wrong")
+    w1_mints = (
+        spark.table(BARS_TABLE)
+        .filter((F.col("venue") == "raydium_cpmm") & (F.col("bar_start") < F.lit(WINDOWS[1][0])))
+        .select("base_mint").distinct()
+    )
+    grads = (
+        spark.table(FIRST_TRADES_TABLE)
+        .groupBy("pool_id", "base_mint").agg(F.min("first_trade").alias("grad"))
+        .join(w1_mints, "base_mint", "left_anti")
+        .filter((F.col("grad") >= F.lit(day_start)) & (F.col("grad") < F.lit(day_end)))
+        .collect()
+    )
+    if not grads:
+        return None
+    return cpmm_pool_bars_sql([(r.pool_id, r.base_mint, r.grad) for r in grads], HORIZON_HOURS)
+
+
+def _days(start: datetime, end: datetime) -> list[datetime]:
+    out, d = [], start
+    while d < end:
+        out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+# Each entry: (job, chunk_start, chunk_end, sql_or_callable, mapper, schema, table)
 jobs = []
 for _w_start, _w_end in WINDOWS:
     jobs += [
@@ -219,9 +278,20 @@ for _w_start, _w_end in WINDOWS:
          pumpswap_pools_sql(_w_start, _w_end), to_pool_row, _POOLS_SCHEMA, POOLS_TABLE),
         ("pools_launchlab_v2", _w_start, _w_end,
          launchlab_pools_sql(_w_start, _w_end), to_pool_row, _POOLS_SCHEMA, POOLS_TABLE),
-        ("bars_raydium_cpmm_v2", _w_start, _w_end,
-         cpmm_launchlab_bars_sql(_w_start, _w_end, HORIZON_HOURS), to_bar_row, _BARS_SCHEMA, BARS_TABLE),
     ]
+# Window 1 CPMM: the original whole-window query (done; skipped).
+jobs.append(("bars_raydium_cpmm_v2", *WINDOWS[0],
+             cpmm_launchlab_bars_sql(*WINDOWS[0], HORIZON_HOURS), to_bar_row, _BARS_SCHEMA, BARS_TABLE))
+# Window 2 CPMM, split per day (2026-10-04): all step-1 days first, then step 2.
+for _d in _days(*WINDOWS[1]):
+    _e = _d + timedelta(days=1)
+    jobs.append(("cpmm_first_trades", _d, _e, cpmm_first_trades_sql(_d, _e),
+                 (lambda r, ts, _day=_d.date().isoformat(): to_first_trade_row(r, _day, ts)),
+                 _FIRST_TRADES_SCHEMA, FIRST_TRADES_TABLE))
+for _d in _days(*WINDOWS[1]):
+    _e = _d + timedelta(days=1)
+    jobs.append(("bars_cpmm_v3", _d, _e, (lambda _d=_d, _e=_e: _cpmm_day_bars_sql(_d, _e)),
+                 to_bar_row, _BARS_SCHEMA, BARS_TABLE))
 for _w_start, _w_end in WINDOWS:
     _s = _w_start
     while _s < _w_end:
@@ -232,6 +302,7 @@ for _w_start, _w_end in WINDOWS:
 client = DuneClient(api_key=DUNE_API_KEY, poll_timeout_s=POLL_TIMEOUT_S)
 ingested_at = datetime.now(timezone.utc)
 pumpswap_run = 0
+cpmm_run = 0
 total = 0
 
 for i, (job, start, end, sql, mapper, schema, table) in enumerate(jobs, start=1):
@@ -245,6 +316,11 @@ for i, (job, start, end, sql, mapper, schema, table) in enumerate(jobs, start=1)
             print(f"Stopping: MAX_PUMPSWAP_CHUNKS={MAX_PUMPSWAP_CHUNKS} reached. Check credits, then set it to None.")
             break
         pumpswap_run += 1
+    if job == "bars_cpmm_v3":
+        if MAX_CPMM_BAR_DAYS is not None and cpmm_run >= MAX_CPMM_BAR_DAYS:
+            print(f"Stopping: MAX_CPMM_BAR_DAYS={MAX_CPMM_BAR_DAYS} reached. Check credits, then set it to None.")
+            break
+        cpmm_run += 1
 
     try:
         dune_rows = None
@@ -258,6 +334,13 @@ for i, (job, start, end, sql, mapper, schema, table) in enumerate(jobs, start=1)
                 raise
             except Exception as rec_exc:
                 print(f"{tag}: could not recover execution {exec_id} ({rec_exc}) -- running fresh")
+        if dune_rows is None and callable(sql):
+            sql = sql()
+            if sql is None:
+                _log_progress(job, *key[1:], "success", 0)
+                done.add(key)
+                print(f"{tag}: no pools graduated this day -- nothing to pull")
+                continue
         if dune_rows is None:
             print(f"{tag}: running on Dune ({datetime.now(timezone.utc):%H:%M:%S} UTC)...", flush=True)
             dune_rows = client.run_sql(sql)
@@ -287,6 +370,7 @@ for i, (job, start, end, sql, mapper, schema, table) in enumerate(jobs, start=1)
         gc.collect()
 
     _log_progress(job, *key[1:], "success", n)
+    done.add(key)
     total += n
     print(f"{tag}: wrote {n:,} rows")
 

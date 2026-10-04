@@ -2202,3 +2202,18 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   column list, two equi-joins via UNION ALL (same rows). Same OR-join fix
   for launchlab_curve_bars_sql (00g cell 3 cost 3.8x pump.fun per day).
   Next: 00g cell 6 measures the CPMM query on one day before re-running.
+- **Window-2 CPMM split into per-day steps (2026-10-04).** The rewritten
+  whole-window CPMM query (narrow columns, equi-joins; 12 credits for a
+  1-day test) still failed on the 20-day window with Dune's
+  "exceeded the user defined maximum amount of resources" after ~14 min,
+  and the key was then empty (the next PumpSwap chunk got a 402). Lesson:
+  a 1-day cost does not scale linearly to one big query on the free tier
+  -- big queries hit the per-query resource cap and still bill. Rule from
+  now on: every Dune pull is chunked to <= 1 day. Window 2 CPMM is now:
+  (1) `cpmm_first_trades` x20 days -> `bronze._cpmm_first_trades` (each
+  LaunchLab mint's CPMM pools + first trade that day; mints from a 7-day
+  stg_swaps lookback); (2) `bars_cpmm_v3` x20 graduation days: graduation
+  = earliest first trade across all days, mints with window-1 CPMM bars
+  skipped, bars pulled for that day's pools via a VALUES list over
+  [graduation, +24h). Step 2 refuses to run until all step-1 days are
+  done. `MAX_CPMM_BAR_DAYS = 1` for the first run. Window 1 is untouched.

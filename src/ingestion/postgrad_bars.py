@@ -25,7 +25,7 @@ Conventions:
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 HORIZON_HOURS_DEFAULT = 24
@@ -203,6 +203,115 @@ x AS (
   WHERE t.block_time < g.first_trade + INTERVAL '{horizon_hours}' HOUR
 )
 {_bars_select('raydium_cpmm')}"""
+
+
+# 2026-10-04: the single whole-window CPMM query (above) failed on window 2
+# with Dune's per-query resource limit, after burning a fresh key. It is
+# kept for window 1 (already done). Window 2 runs in two per-day steps:
+#   1. cpmm_first_trades_sql -- per day, each LaunchLab mint's CPMM pools
+#      and their first trade THAT DAY (small output, no bars).
+#   2. cpmm_pool_bars_sql -- bars for an explicit list of pools whose
+#      graduation (earliest first trade across all days) falls on one day.
+LAUNCHLAB_MINT_LOOKBACK_DAYS = 7  # a graduating mint had curve trades within the last week
+
+
+def _cpmm_cols() -> str:
+    return (
+        "project_program_id, block_time, block_slot, tx_index, outer_instruction_index, "
+        "token_bought_mint_address, token_sold_mint_address, "
+        "token_bought_amount, token_sold_amount, amount_usd, trader_id"
+    )
+
+
+def cpmm_first_trades_sql(day_start: datetime, day_end: datetime) -> str:
+    """Step 1: one row per (CPMM pool, LaunchLab mint) traded in [day_start,
+    day_end), with that day's first trade time."""
+    lookback = day_start - timedelta(days=LAUNCHLAB_MINT_LOOKBACK_DAYS)
+    return f"""
+WITH ll_mints AS (
+  SELECT DISTINCT base_token_mint AS mint
+  FROM raydium_launchlab_v1.stg_swaps
+  WHERE block_date >= DATE '{lookback.date()}'
+    AND block_date <  DATE '{day_end.date()}'
+),
+cpmm AS (
+  SELECT {_cpmm_cols()}
+  FROM dex_solana.trades
+  WHERE project = 'raydium' AND version = {CPMM_VERSION}
+    AND block_time >= {_ts(day_start)}
+    AND block_time <  {_ts(day_end)}
+),
+cp AS (
+  SELECT t.project_program_id, t.block_time, m.mint AS base_mint
+  FROM cpmm t JOIN ll_mints m ON m.mint = t.token_bought_mint_address
+  UNION ALL
+  SELECT t.project_program_id, t.block_time, m.mint AS base_mint
+  FROM cpmm t JOIN ll_mints m ON m.mint = t.token_sold_mint_address
+)
+SELECT project_program_id AS pool_id, base_mint, min(block_time) AS first_trade, count(*) AS n_trades
+FROM cp
+GROUP BY 1, 2
+"""
+
+
+def cpmm_pool_bars_sql(pools: list[tuple[str, str, datetime]], horizon_hours: int = HORIZON_HOURS_DEFAULT) -> str:
+    """Step 2: 1m bars for the given (pool_id, base_mint, graduation_time)
+    pools, each over [graduation, graduation + horizon). Pools are passed
+    as a VALUES list, so the scan is limited to their time span."""
+    if not pools:
+        raise ValueError("no pools")
+    lo = min(p[2] for p in pools)
+    hi = max(p[2] for p in pools) + timedelta(hours=horizon_hours)
+    values = ",\n    ".join(f"('{pid}', '{mint}', {_ts(g)})" for pid, mint, g in pools)
+    return f"""
+WITH grad (pool_id, base_mint, first_trade) AS (
+  VALUES
+    {values}
+),
+x AS (
+  SELECT
+    g.pool_id,
+    g.base_mint,
+    CASE WHEN t.token_bought_mint_address = g.base_mint
+         THEN t.token_sold_mint_address ELSE t.token_bought_mint_address END AS quote_mint,
+    t.block_time,
+    {_ORDER_KEY} AS order_key,
+    t.token_bought_mint_address = g.base_mint AS is_buy,
+    t.trader_id,
+    t.amount_usd,
+    CASE
+      WHEN t.token_bought_mint_address = g.base_mint THEN t.amount_usd / NULLIF(t.token_bought_amount, 0)
+      ELSE t.amount_usd / NULLIF(t.token_sold_amount, 0)
+    END AS price,
+    CASE
+      WHEN t.token_bought_mint_address = g.base_mint THEN t.token_sold_amount / NULLIF(t.token_bought_amount, 0)
+      ELSE t.token_bought_amount / NULLIF(t.token_sold_amount, 0)
+    END AS price_q,
+    CASE
+      WHEN t.token_bought_mint_address = g.base_mint THEN t.token_sold_amount
+      ELSE t.token_bought_amount
+    END AS quote_amount
+  FROM dex_solana.trades t
+  JOIN grad g ON t.project_program_id = g.pool_id
+  WHERE t.project = 'raydium' AND t.version = {CPMM_VERSION}
+    AND t.block_time >= {_ts(lo)}
+    AND t.block_time <  {_ts(hi)}
+    AND g.base_mint IN (t.token_bought_mint_address, t.token_sold_mint_address)
+    AND t.block_time >= g.first_trade
+    AND t.block_time <  g.first_trade + INTERVAL '{horizon_hours}' HOUR
+)
+{_bars_select('raydium_cpmm')}"""
+
+
+def to_first_trade_row(r: dict[str, Any], day: str, ingested_at: datetime) -> dict[str, Any]:
+    return {
+        "pool_id": r["pool_id"],
+        "base_mint": r["base_mint"],
+        "first_trade": parse_dune_ts(r["first_trade"]),
+        "n_trades": _i(r.get("n_trades")),
+        "day": day,
+        "ingested_at": ingested_at,
+    }
 
 
 def pumpswap_pools_sql(window_start: datetime, window_end: datetime) -> str:

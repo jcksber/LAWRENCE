@@ -118,3 +118,32 @@ def test_quote_unit_price_columns_in_both_sqls():
     # quote-per-base: the OTHER side's amount over the base side's amount
     ps = pumpswap_bars_sql(T0, T1)
     assert "WHEN t.token_bought_mint_address = p.baseMint THEN t.token_sold_amount / NULLIF(t.token_bought_amount, 0)" in ps
+
+
+def test_cpmm_first_trades_sql_is_one_day_and_equi_joins():
+    from ingestion.postgrad_bars import cpmm_first_trades_sql
+
+    d0, d1 = datetime(2026, 9, 20, tzinfo=timezone.utc), datetime(2026, 9, 21, tzinfo=timezone.utc)
+    sql = cpmm_first_trades_sql(d0, d1)
+    assert "block_time >= TIMESTAMP '2026-09-20 00:00:00'" in sql
+    assert "block_time <  TIMESTAMP '2026-09-21 00:00:00'" in sql
+    assert "block_date >= DATE '2026-09-13'" in sql  # 7-day mint lookback
+    assert "m.mint IN (" not in sql and "SELECT t.*" not in sql
+    assert "min(block_time) AS first_trade" in sql
+
+
+def test_cpmm_pool_bars_sql_values_and_bounds():
+    import pytest
+
+    from ingestion.postgrad_bars import cpmm_pool_bars_sql
+
+    g1 = datetime(2026, 9, 20, 1, tzinfo=timezone.utc)
+    g2 = datetime(2026, 9, 20, 5, tzinfo=timezone.utc)
+    sql = cpmm_pool_bars_sql([("P1", "M1", g1), ("P2", "M2", g2)], horizon_hours=24)
+    assert "('P1', 'M1', TIMESTAMP '2026-09-20 01:00:00')" in sql
+    assert "t.block_time >= TIMESTAMP '2026-09-20 01:00:00'" in sql
+    assert "t.block_time <  TIMESTAMP '2026-09-21 05:00:00'" in sql  # last graduation + 24h
+    assert "JOIN grad g ON t.project_program_id = g.pool_id" in sql
+    assert "'raydium_cpmm' AS venue" in sql
+    with pytest.raises(ValueError):
+        cpmm_pool_bars_sql([])
