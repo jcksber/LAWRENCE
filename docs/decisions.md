@@ -2217,3 +2217,32 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   skipped, bars pulled for that day's pools via a VALUES list over
   [graduation, +24h). Step 2 refuses to run until all step-1 days are
   done. `MAX_CPMM_BAR_DAYS = 1` for the first run. Window 1 is untouched.
+- **Split CPMM run 1 (2026-10-04): 131 credits** for all 20
+  `cpmm_first_trades` days (645-1,431 pools/day, 10-25 s each) + the first
+  `bars_cpmm_v3` day (2026-09-13: 39,115 bars -- the heaviest day, it
+  absorbs pools that graduated before the window but have no window-1
+  bars). Can't split the 131 per step from one delta; ~1,200 credits/M
+  exported bars puts the first bars day at ~50. Remaining 19 bars days
+  estimated ~400-950 (upper bound = 19 x day 1).
+- **Window-2 CPMM done (2026-10-04).** Run 2: 743 credits for the other
+  19 `bars_cpmm_v3` days (838,580 bars; 14k-85k/day, busiest 09-17 to
+  09-24) + 1 PumpSwap chunk (46,150 bars) = ~840 credits/M exported rows.
+  Window-2 CPMM total: 877,695 bars for 20 days vs 418,593 for window 1's
+  30 days (~3x per day, consistent with LaunchLab's ~5x curve volume).
+  Whole split CPMM pull: 874 credits (vs one failed whole-window query
+  that burned a full 2,500-credit key). Remaining estimates at 840-1,200
+  credits/M rows: PumpSwap 79 chunks x ~46k bars ~2-3k; 00h ~5.4M bars
+  ~5-7k. Total remaining ~7-10k.
+- **00f window-2 PumpSwap run 1 (2026-10-05):** 53 chunks done
+  (2026-09-13 06:00 to 09-26 12:00), ~2.10M bars (22k-74k per 6h chunk,
+  avg ~40k) on the key's remaining ~1,600 credits -> ~770 credits/M rows.
+  Chunk 2026-09-26 12:00-18:00 logged `partial` (10k rows salvaged; it is
+  re-fetched whole next run, Silver dedupes). Remaining: 26 chunks, ~1M
+  bars, ~800 credits.
+- **00h first run (2026-10-06):** 59.7 credits for the first two pump.fun
+  6h chunks of 2026-09-13 (56,911 bars, 14,438 tokens, 685k trades, 0%
+  unpriced) -> ~1,050 credits/M bars, ~30/chunk on a light day (09-13 had
+  the fewest trades, 2.5M). Est. ~200 credits per average pump.fun day +
+  ~100 per LaunchLab day (unmeasured) -> ~5-6k for all 20 days.
+  (MAX_CHUNKS=2 covered two pump.fun chunks, not one per venue as the
+  notebook said -- comment fixed.)

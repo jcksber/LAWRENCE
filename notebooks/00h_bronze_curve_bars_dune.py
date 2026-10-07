@@ -20,7 +20,7 @@
 # MAGIC and stops -- swap the key and re-run. Re-fetched chunks can leave
 # MAGIC duplicate bars; Silver dedupes on `(venue, pool_id, bar_start)`.
 # MAGIC
-# MAGIC **First run: leave `MAX_CHUNKS = 2`** (one chunk per venue), note the
+# MAGIC **First run: leave `MAX_CHUNKS = 2`** (the first two pump.fun chunks), note the
 # MAGIC credit delta, then set it to `None`.
 
 # COMMAND ----------
@@ -71,7 +71,7 @@ SQL_BUILDERS = {
     "raydium_launchlab": launchlab_curve_bars_sql,
 }
 
-# 2 = one chunk per venue to check credits. None = run everything not done.
+# 2 = first two chunks (both pump.fun) to check credits. None = run everything not done.
 MAX_CHUNKS = 2
 
 BARS_TABLE = "lawrence.bronze.curve_bars_1m"
