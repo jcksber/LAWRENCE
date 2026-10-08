@@ -184,3 +184,33 @@ position history is the ground truth this substitutes for until it exists.
    exactly 0 for T 15+ min after launch -- idle moments on tokens that had
    already gone quiet, which a live bot wouldn't be scoring. Labels are
    unaffected; only which moments are sampled changes.
+
+## Barrier label (2026-10-08, Jack approved)
+
+Why: the fixed 15-minute return (`y_entry`) never cleared ~3% round-trip
+costs in any segment over 50 days, while results at a 100x cap were
+positive -- the profit is in rare runs a fixed exit throws away. The new
+label asks the question Jack's trade actually depends on (sell half at 2x
+to recover the stake).
+
+For each entry row at T, entry price `p` = `price_at_t`, and each horizon
+N in `BARRIER_HORIZONS_MIN` = 60, 360, 1440 minutes:
+
+- Walk the bars that finished after T (trade_time > T) up to T + N.
+- **down** if a bar's low <= 0.5 p; **up** if a bar's high >= 2.0 p. A bar
+  touching both counts as **down** (order unknown -- conservative).
+- **timeout** if neither by T + N.
+- **censored** (NULL) if neither was hit and the token is unobserved
+  before T + N (`observed_until`, same rule as `y_entry`).
+
+Columns: `y_up_{N}m` (1.0 up / 0.0 down or timeout / NULL censored),
+`r_up_{N}m` (realized return of the rule, before costs: up = +1.0; down =
+-0.5, or the bar's close if the whole bar traded below the stop; timeout
+= price at T + N, quiet curve/postgrad tokens keeping their last price),
+`t_up_{N}m` (minutes from T to resolution).
+
+Known limits: entry at the last close at T (no fill delay or slippage in
+the label); intra-bar order unknown; the full position is modelled, not
+the half-sell -- the half-sell is an exit-layer rule on top of this. The
+24h horizon is censored for most post-graduation rows (bars stop 24h
+after graduation).

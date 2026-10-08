@@ -28,6 +28,8 @@ GOLD_INPUT_COLUMNS = [
     "token_id",
     "trade_time",
     "price",
+    "high",  # 2026-10-08: barrier labels need each bar's range
+    "low",
     "amount_usd",
     "n_trades",
     "n_buys",
@@ -69,6 +71,8 @@ def gold_input(price_df: DataFrame, curve_data_end: datetime) -> DataFrame:
             "token_id",
             (F.col("bar_start") + F.expr("INTERVAL 1 MINUTE")).alias("trade_time"),
             F.col("close").alias("price"),
+            "high",
+            "low",
             F.col("volume_usd").alias("amount_usd"),
             "n_trades",
             "n_buys",

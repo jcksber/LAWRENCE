@@ -364,3 +364,85 @@ def test_v1_sampling_unchanged_without_launch_time():
     bars = [_bar(0, 1.0), _bar(20, 1.0)]
     times = sample_assessment_times(bars, interval=timedelta(minutes=10))
     assert [(x - T0).total_seconds() / 60 for x in times] == [0, 10, 20]
+
+
+# --- 2026-10-08: barrier labels (2x before -50%) ---------------------------
+
+def _hlbar(minutes_offset, close, high=None, low=None, phase="curve"):
+    return {
+        "trade_time": (T0 + timedelta(minutes=minutes_offset)).isoformat(),
+        "price": close, "high": high if high is not None else close,
+        "low": low if low is not None else close,
+        "n_trades": 1, "n_buys": 1, "amount_usd": 10.0, "phase": phase,
+        "chain_family": "solana", "network": None, "dex_venue": "pumpdotfun", "dex_protocol": None,
+    }
+
+
+def test_barrier_up_hit_on_bar_high_after_t():
+    from features.gold_features import barrier_outcome
+
+    bars = [_hlbar(0, 1.0), _hlbar(5, 1.2, high=2.1), _hlbar(10, 0.4)]
+    b = barrier_outcome(bars, T0, 1.0, 60)
+    assert b["outcome"] == "up" and b["ret"] == 1.0 and b["minutes"] == 5
+
+
+def test_barrier_ignores_bars_at_or_before_t():
+    from features.gold_features import barrier_outcome
+
+    # the T bar itself (already known at T) spiked to 3x -- must not count
+    bars = [_hlbar(0, 1.0, high=3.0), _hlbar(5, 1.1)]
+    b = barrier_outcome(bars, T0, 1.0, 60)
+    assert b["outcome"] == "timeout"
+
+
+def test_barrier_both_in_one_bar_counts_as_down():
+    from features.gold_features import barrier_outcome
+
+    bars = [_hlbar(0, 1.0), _hlbar(3, 1.0, high=2.5, low=0.4)]
+    b = barrier_outcome(bars, T0, 1.0, 60)
+    assert b["outcome"] == "down" and b["ret"] == -0.5
+
+
+def test_barrier_gap_through_stop_realizes_close():
+    from features.gold_features import barrier_outcome
+
+    bars = [_hlbar(0, 1.0), _hlbar(3, 0.2, high=0.3, low=0.1)]
+    b = barrier_outcome(bars, T0, 1.0, 60)
+    assert b["outcome"] == "down" and abs(b["ret"] - (-0.8)) < 1e-12
+
+
+def test_barrier_timeout_uses_price_at_horizon_and_quiet_curve_keeps_price():
+    from features.gold_features import barrier_outcome
+
+    bars = [_hlbar(0, 1.0), _hlbar(10, 1.3)]  # then silent
+    b = barrier_outcome(bars, T0, 1.0, 60)
+    assert b["outcome"] == "timeout" and abs(b["ret"] - 0.3) < 1e-12 and b["minutes"] == 60
+
+
+def test_barrier_censored_when_unobserved_and_unresolved():
+    from features.gold_features import barrier_outcome
+
+    bars = [_hlbar(0, 1.0), _hlbar(10, 1.3)]
+    assert barrier_outcome(bars, T0, 1.0, 60, observed_until=T0 + timedelta(minutes=30)) is None
+    # ...but a hit before observed_until still resolves
+    bars = [_hlbar(0, 1.0), _hlbar(10, 2.2)]
+    assert barrier_outcome(bars, T0, 1.0, 60, observed_until=T0 + timedelta(minutes=30))["outcome"] == "up"
+
+
+def test_entry_row_carries_barrier_columns():
+    from features.gold_features import BARRIER_HORIZONS_MIN
+
+    bars = [_hlbar(0, 1.0), _hlbar(1, 1.0), _hlbar(20, 2.5)]
+    row = build_entry_row("TOK", T0 + timedelta(minutes=1), bars, hold_minutes=15)
+    for n in BARRIER_HORIZONS_MIN:
+        assert row[f"y_up_{n}m"] == 1.0 and row[f"r_up_{n}m"] == 1.0 and row[f"t_up_{n}m"] == 19
+
+
+def test_barrier_horizons_share_one_scan_but_resolve_separately():
+    from features.gold_features import _barrier_labels
+
+    bars = [_hlbar(0, 1.0), _hlbar(30, 1.1), _hlbar(120, 2.4)]
+    out = _barrier_labels(bars, T0, 1.0, None)
+    assert out["y_up_60m"] == 0.0 and abs(out["r_up_60m"] - 0.1) < 1e-12 and out["t_up_60m"] == 60
+    assert out["y_up_360m"] == 1.0 and out["t_up_360m"] == 120
+    assert out["y_up_1440m"] == 1.0

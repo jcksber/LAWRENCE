@@ -59,6 +59,8 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import numpy as np
+
 HOLD_MINUTES = 15  # PRIMARY label horizon (y_entry / y_exit). 2026-10-01:
     # cut from 60 -- median pump.fun graduation is ~4.4 min after launch and
     # most tokens are dead within 15, so a 60-min hold measured long after
@@ -352,6 +354,117 @@ def _multi_horizon(
     return out
 
 
+# 2026-10-08 (see docs/label_spec.md, "Barrier label"): the label that
+# matches how Jack would trade -- sell half at 2x to recover the stake. For
+# each horizon N: does the price reach UP x entry before it falls to
+# DOWN x entry, within N? Fixed-15-minute returns (y_entry) never cleared
+# ~3% round-trip costs because the money is in rare runs a fixed exit
+# throws away; this asks the question the trade actually depends on.
+BARRIER_UP = 2.0
+BARRIER_DOWN = 0.5
+BARRIER_HORIZONS_MIN: tuple[int, ...] = (60, 360, 1440)
+
+
+_ARRAY_CACHE: tuple | None = None
+
+
+def _bar_arrays(trades: TokenTrades) -> tuple:
+    """(epoch seconds, high, low, close) numpy arrays for one token, cached
+    for the token currently being processed -- the barrier walk runs ~150
+    times per busy token over up to 1,440 later bars, so per-row Python
+    loops and timestamp parsing were the bottleneck."""
+    global _ARRAY_CACHE
+    key = (id(trades), len(trades), trades[0]["trade_time"], trades[-1]["trade_time"]) if trades else None
+    if _ARRAY_CACHE is None or _ARRAY_CACHE[0] != key:
+        close = np.array([np.nan if _price(r) is None else _price(r) for r in trades], dtype=float)
+
+        def _col(name: str) -> np.ndarray:
+            v = np.array([np.nan if _missing(r.get(name)) else float(r[name]) for r in trades], dtype=float)
+            return np.where(np.isnan(v), close, v)
+
+        ts = np.array([_parse(r["trade_time"]).timestamp() for r in trades], dtype=float)
+        _ARRAY_CACHE = (key, ts, _col("high"), _col("low"), close)
+    return _ARRAY_CACHE[1:]
+
+
+def _first_hits(
+    trades: TokenTrades, t: datetime, price_t: float, horizon_minutes: int, up: float, down: float
+) -> tuple[int | None, int | None]:
+    """Indexes of the first bar after T (within the horizon) whose low
+    reaches the stop / whose high reaches the target, or None."""
+    ts, hi, lo, _ = _bar_arrays(trades)
+    t0 = t.timestamp()
+    i0 = int(np.searchsorted(ts, t0, side="right"))
+    i1 = int(np.searchsorted(ts, t0 + horizon_minutes * 60, side="right"))
+    if i1 <= i0:
+        return None, None
+    d = np.flatnonzero(lo[i0:i1] <= down * price_t)
+    u = np.flatnonzero(hi[i0:i1] >= up * price_t)
+    return (i0 + int(d[0]) if d.size else None), (i0 + int(u[0]) if u.size else None)
+
+
+def _resolve(
+    trades: TokenTrades, t: datetime, price_t: float, horizon_minutes: int, observed_until: Any,
+    d: int | None, u: int | None, up: float, down: float,
+) -> dict[str, Any] | None:
+    ts, hi, _, close = _bar_arrays(trades)
+    limit = t.timestamp() + horizon_minutes * 60
+    d = d if d is not None and ts[d] <= limit else None
+    u = u if u is not None and ts[u] <= limit else None
+    if d is not None and (u is None or d <= u):  # same bar -> down (order unknown)
+        gapped = hi[d] < down * price_t and not np.isnan(close[d])
+        ret = (close[d] / price_t - 1) if gapped else down - 1
+        return {"outcome": "down", "ret": float(ret), "minutes": (ts[d] - t.timestamp()) / 60}
+    if u is not None:
+        return {"outcome": "up", "ret": up - 1, "minutes": (ts[u] - t.timestamp()) / 60}
+    if _censored(t, horizon_minutes, observed_until):
+        return None
+    r = _forward_return(trades, t, price_t, horizon_minutes, None)
+    return {"outcome": "timeout", "ret": r[0], "minutes": float(horizon_minutes)}
+
+
+def barrier_outcome(
+    trades: TokenTrades,
+    t: datetime,
+    price_t: float,
+    horizon_minutes: int,
+    observed_until: Any = None,
+    *,
+    up: float = BARRIER_UP,
+    down: float = BARRIER_DOWN,
+) -> dict[str, Any] | None:
+    """First barrier hit after T within `horizon_minutes`, using each later
+    bar's high/low (only bars that finished after T -- point-in-time).
+
+    Returns {"outcome": "up"|"down"|"timeout", "ret": realized return,
+    "minutes": minutes from T to resolution}, or None if censored (no
+    barrier hit and the token is unobserved before T + horizon).
+
+    Conservative choices:
+    - a bar that touches BOTH barriers counts as "down" (order unknown);
+    - "up" realizes exactly up-1 (a limit sell at the barrier);
+    - "down" realizes down-1, or the bar's close if the whole bar traded
+      below the stop (gapped through it);
+    - timeout realizes the price at T + horizon (quiet curve/postgrad
+      tokens keep their last price; others are rug-clamped, as y_entry)."""
+    d, u = _first_hits(trades, t, price_t, horizon_minutes, up, down)
+    return _resolve(trades, t, price_t, horizon_minutes, observed_until, d, u, up, down)
+
+
+def _barrier_labels(trades: TokenTrades, t: datetime, price_t: float, observed_until: Any) -> dict[str, Any]:
+    """y_up_{N}m (1 = hit 2x first, 0 = stop or timeout, NULL = censored),
+    r_up_{N}m (realized return of that rule) and t_up_{N}m (minutes).
+    One scan over the longest horizon serves all of them."""
+    d, u = _first_hits(trades, t, price_t, max(BARRIER_HORIZONS_MIN), BARRIER_UP, BARRIER_DOWN)
+    out: dict[str, Any] = {}
+    for n in BARRIER_HORIZONS_MIN:
+        b = _resolve(trades, t, price_t, n, observed_until, d, u, BARRIER_UP, BARRIER_DOWN)
+        out[f"y_up_{n}m"] = None if b is None else float(b["outcome"] == "up")
+        out[f"r_up_{n}m"] = None if b is None else b["ret"]
+        out[f"t_up_{n}m"] = None if b is None else b["minutes"]
+    return out
+
+
 def build_entry_row(
     token_id: str,
     t: datetime,
@@ -389,6 +502,7 @@ def build_entry_row(
         "y_entry": y_entry,
         "is_rug_clamped": is_rug_clamped,
         **_multi_horizon("y_entry", trades, t, price_t, observed_until),
+        **_barrier_labels(trades, t, price_t, observed_until),
         **features,
         **_v2_features(trades, t, launch_time),
     }

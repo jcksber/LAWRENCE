@@ -2246,3 +2246,74 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   ~100 per LaunchLab day (unmeasured) -> ~5-6k for all 20 days.
   (MAX_CHUNKS=2 covered two pump.fun chunks, not one per venue as the
   notebook said -- comment fixed.)
+- **00h complete and reconciled (2026-10-07).** 100/100 chunks success
+  (80 pump.fun, 20 LaunchLab; 3 partial salvages = 40k duplicate bars,
+  Silver dedupes). Sept 13-14 looked low (70-73% of raw trades in bars vs
+  86-92% other days). Dune dust count explains it exactly: dust (<$0.01)
+  was 30.4% / 26.9% of pump.fun trades on 09-13/14 vs 9-14% on 09-15..20,
+  and raw minus dust equals the bars' trade count to the trade on every
+  day 09-13..09-19. 09-20 is +70k (2.7%) over -- duplicate bars from a
+  partial chunk, removed by Silver's dedupe.
+- **01b with the forward window (2026-10-07).** Curve series is seamless
+  across 2026-09-13 (pump.fun 150k bars on 09-12 -> 134k on 09-13, a
+  dust-heavy day; LaunchLab 63k -> 50k); trader stats present on 100% of
+  curve bars from 09-13, 0 before, as designed. Silver within ~1% of 00h's
+  raw bar counts (dedupe + outlier band). Tokens by phase: curve+postgrad
+  34,268 (was 20,621), curve-only 1,829,254 (was 1,061,515), postgrad-only
+  28,392 (was 16,238; PumpSwap pools for non-curve or pre-window tokens,
+  excluded from Gold), amm-only 44,563. Curve tokens: 1.80M usd + 64k
+  quote. Graduation rate ~1.8%. nonpositive_close = high_below_low = 0.
+- **Gold rebuilt on 50 days (2026-10-08).** entry_candidates 13,425,917 rows
+  / 1,863,070 tokens (latest T 2026-10-03 23:24). exit_candidates 8,256,088
+  rows / 424,636 tokens. Exit gap checked by launch window: old window
+  232,090 of 1,082,128 tokens (21.4%; 56% of tokens whose last bar is
+  15+ min after launch), new window 192,546 of 781,394 (24.6%; 64%) -- no
+  window-specific bug. (The v2 figure of 413k exit tokens predates the
+  activity filter.) The 287,593 tokens that "lived" 15+ min but have no
+  exit row: median 1 bar after minute 15, 82% have <= 2 bars after it,
+  98.8% have no bar between minutes 15 and 60 -- a launch burst plus a
+  stray later trade, never tradeable after the first minutes. An exit row
+  needs a trade within 2 min of T and a price within 30 min before T-15m,
+  so excluding them is correct.
+- **04 on 50 days (2026-10-08).** Ranking unchanged (Spearman 0.22-0.29,
+  monotone deciles, best decile -2.5% to -3.8% after costs). Model EV
+  -7.0/-1.0/-1.1/+0.2/-1.3% vs buy-everything -7.3% to -8.1%. Pooled
+  stress: ex-top-1% -5.8% to -14.9% every fold; top 1% = 2-9x of profit;
+  only the cap-100 EV is positive. Liquidity: the two zero-USD-volume
+  quartiles are ~breakeven, the highest-liquidity quartile is worst
+  (-4.0%). Segments: pumpdotfun/usd -2.6% (base -8.2%; 34.6k trades,
+  7.5k tokens; folds -7.3/-4.2/+2.2/-0.5/+5.7). StonkFun/quote -0.8%
+  (base -3.9%; 63k trades, 6.4k tokens). **StonkFun/usd -2.0%** (base
+  -5.5%; 17.5k trades, 2.7k tokens; folds 2-4 all negative) -- the +4%
+  on 30 days did not hold. Raydium/usd -4.0%, VOIDEX -0.8%. Only
+  standout: **letsbonk.fun/usd +12.1%** (base -2.2%; 387 trades, 117
+  tokens; folds +6.6/+15.7/-3.5/+22.8/+53.6) -- small, untested by the
+  stress checks, added as its own segment in the per-segment stress cell.
+- **Per-segment stress on 50 days (2026-10-08): no segment survives.**
+  Pooled 10x: pumpdotfun/usd -2.6% (ex-top-1% -10.8%, per-token -4.3%,
+  14% of tokens profitable); launchlab/usd -1.9% (ex-top-1% -7.8%,
+  per-token -15.5%); StonkFun/usd -2.0% (ex-top-1% -7.9%, per-token
+  -16.0%); StonkFun/quote -0.8% (ex-top-1% -5.9%, per-token -15.7%).
+  ex-top-1% is negative in every fold for every segment. First signal per
+  token is near zero (-0.3% to -6.7%). Only pumpdotfun's per-token EV is
+  positive in folds 2-4 (+6.2/+1.6/+1.9%), but its ex-top-1% is -7% to
+  -8% in those folds. Verdict: with a fixed 15-minute hold, nothing clears
+  ~3% round-trip costs; the 30-day LaunchLab result did not repeat.
+  letsbonk.fun/usd (+12.1%, 117 tokens) not yet stress-tested.
+- **letsbonk.fun/usd stress (2026-10-08):** 387 trades / 117 tokens, EV
+  +12.1%, ex-top-1% **+1.8%** (the only segment still positive), first
+  signal per token +21.3%, per-token +5.0%, 20% of tokens profitable, top
+  1% = 85% of profit, **one token = 51% of profit**. Treated as a lead,
+  not evidence: 117 tokens is too few (rough standard error on the
+  per-token mean is several points, so +5% is within noise), and half the
+  profit is one token. Plan: hold it out as a pre-registered hypothesis
+  and check it on data after 2026-10-03, untouched by any tuning.
+- **Barrier label added (2026-10-08, Jack chose it).** "Does the price hit
+  2x before -50%, within N?" for N = 1h / 6h / 24h, from each later bar's
+  high/low (gold_input now passes high/low). Columns y_up_/r_up_/t_up_{N}m
+  in entry_candidates; spec in label_spec.md. Conservative: a bar
+  touching both barriers counts as down; up realizes exactly +100%; a gap
+  through the stop realizes the bar's close. 8 new tests (43 pass);
+  numpy-vectorised, one scan serves all horizons (busy 3,000-bar token:
+  256 rows in 0.16 s). Next:
+  re-run 02, check the barrier stats cell, then a classifier in 04.

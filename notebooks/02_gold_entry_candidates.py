@@ -55,7 +55,7 @@ import features.gold_input  # noqa: E402
 
 importlib.reload(features.gold_features)
 importlib.reload(features.gold_input)
-from features.gold_features import LABEL_HOLD_MINUTES, build_entry_row, sample_assessment_times  # noqa: E402
+from features.gold_features import BARRIER_HORIZONS_MIN, LABEL_HOLD_MINUTES, build_entry_row, sample_assessment_times  # noqa: E402
 from features.gold_input import GOLD_INPUT_COLUMNS, gold_input  # noqa: E402
 
 # COMMAND ----------
@@ -111,6 +111,11 @@ _ENTRY_SCHEMA = StructType([
 # 2026-10-01: one label column per horizon in LABEL_HOLD_MINUTES (5/15/60),
 # NULL where that horizon is censored. `y_entry` itself = HOLD_MINUTES (15).
 + [StructField(f"y_entry_{h}m", DoubleType()) for h in LABEL_HOLD_MINUTES]
+# 2026-10-08: barrier labels -- hit 2x before -50% within N (see gold_features).
+# y_up is 1.0 / 0.0 / NULL -- double, not int, so NULL survives pandas.
++ [StructField(f"y_up_{n}m", DoubleType()) for n in BARRIER_HORIZONS_MIN]
++ [StructField(f"r_up_{n}m", DoubleType()) for n in BARRIER_HORIZONS_MIN]
++ [StructField(f"t_up_{n}m", DoubleType()) for n in BARRIER_HORIZONS_MIN]
 )
 _ENTRY_SCHEMA_COLUMNS = [f.name for f in _ENTRY_SCHEMA]
 
@@ -253,4 +258,23 @@ print(
     f"by _MAX_TRADES_PER_TOKEN, or one with no assessment point that had both a usable "
     f"price/feature anchor and enough trailing history) -- never treat it as fine by "
     f"default."
+)
+
+# COMMAND ----------
+
+# 2026-10-08: barrier-label check. Per horizon: how often the price hits 2x
+# before -50% (y_up = 1), how often it's censored (NULL), the average
+# realized return of the rule before costs, and the median minutes to
+# resolution. Split by venue and phase at T.
+_g = spark.table(GOLD_TABLE)
+display(
+    _g.groupBy("dex_venue", "is_postgrad_at_t")
+    .agg(
+        F.count("*").alias("rows"),
+        *[F.avg(f"y_up_{n}m").alias(f"p_up_{n}m") for n in BARRIER_HORIZONS_MIN],
+        *[F.avg(F.col(f"y_up_{n}m").isNull().cast("double")).alias(f"censored_{n}m") for n in BARRIER_HORIZONS_MIN],
+        *[F.avg(f"r_up_{n}m").alias(f"mean_r_{n}m") for n in BARRIER_HORIZONS_MIN],
+        *[F.percentile_approx(f"t_up_{n}m", 0.5).alias(f"median_min_{n}m") for n in BARRIER_HORIZONS_MIN],
+    )
+    .orderBy("dex_venue", "is_postgrad_at_t")
 )

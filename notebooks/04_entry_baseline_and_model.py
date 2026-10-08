@@ -414,6 +414,9 @@ SEGMENTS = {
     & (mt["platform_name"] != "StonkFun"),
     "launchlab/quote StonkFun": (mt["dex_venue"] == "raydium_launchlab") & (mt["price_unit"] == "quote")
     & (mt["platform_name"] == "StonkFun"),
+    # 2026-10-08: the one platform positive in 4 of 5 folds on 50 days.
+    "launchlab/usd letsbonk.fun": (mt["dex_venue"] == "raydium_launchlab") & (mt["price_unit"] == "usd")
+    & (mt["platform_name"] == "letsbonk.fun"),
 }
 
 
