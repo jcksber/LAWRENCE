@@ -56,7 +56,8 @@ N_WALK_FORWARD_FOLDS = 5  # placeholder -- revisit once real fold sizes are visi
 
 # Features + both barrier labels per horizon (is_postgrad_at_t is a feature here and drives per-row fees).
 _READ_COLUMNS = ["token_id", "assessment_time", "price_unit", *FEATURE_COLUMNS,
-                 *[c for n in HORIZONS for c in label_columns(n)]]
+                 *[c for n in HORIZONS for c in label_columns(n)],
+                 *[f"t_up_{n}m" for n in HORIZONS]]  # minutes to resolution (direction diagnostic)
 
 # select() before toPandas() -- same lesson as notebooks/02/03's OOM fix
 # (see docs/decisions.md): don't pull columns nothing downstream reads
@@ -220,8 +221,9 @@ def _concentration(g):
     tok_sum = g.groupby("token_id")["net"].sum()
     return pd.Series({
         "trades": len(g), "tokens": g["token_id"].nunique(), "hit_rate": g["y"].mean(),
+        # "fold" is missing when the caller grouped BY fold (include_groups=False)
         "net": g["net"].mean(), "net_first_per_token": g.sort_values("assessment_time")
-            .drop_duplicates(["fold", "token_id"])["net"].mean(),
+            .drop_duplicates([c for c in ("fold", "token_id") if c in g.columns])["net"].mean(),
         "net_per_token": per_token.mean(), "tokens_profitable": (per_token > 0).mean(),
         "top_token_share_of_pnl": tok_sum.max() / tok_sum.sum() if tok_sum.sum() > 0 else np.nan,
     })
@@ -234,3 +236,155 @@ for n in HORIZONS:
           .query("trades >= 30").sort_values("trades", ascending=False).round(4).to_string())
     print(f"horizon {n}m -- top 5% picks by fold:")
     print(g.groupby("fold").apply(_concentration, include_groups=False).round(4).to_string())
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Direction diagnostic (2026-10-09): does anything predict WHICH WAY?
+# MAGIC
+# MAGIC The barrier model ranks well (AUC ~0.8) but its top picks lose most --
+# MAGIC it finds tokens that will MOVE, not which way. Here: only rows that
+# MAGIC resolved (hit 2x or -50%; timeouts dropped), target = 1 if 2x came
+# MAGIC first. AUC ~0.5 = no directional skill in the current features.
+# MAGIC Compared against single-feature AUCs (momentum, buy/sell ratio, age)
+# MAGIC and with the model's feature importance, to see what (if anything)
+# MAGIC carries direction.
+
+# COMMAND ----------
+
+def _resolved(df, n):
+    y_col, r_col = label_columns(n)
+    y, r, t = df[y_col], df[r_col], df[f"t_up_{n}m"]
+    up = y == 1
+    # down = stop hit (r <= -50%), excluding a rug-clamped TIMEOUT (r = -1 at t = horizon)
+    down = (y == 0) & (r <= -0.5) & ~((r == -1.0) & (t >= n))
+    out = df[up | down].copy()
+    out["dir_up"] = up[up | down].astype(int)
+    return out
+
+
+dir_rows = []
+for n in HORIZONS:
+    for i, (train_mask, test_mask) in enumerate(folds):
+        tr, te = _resolved(entry_df[train_mask], n), _resolved(entry_df[test_mask], n)
+        if tr["dir_up"].nunique() < 2 or te["dir_up"].nunique() < 2:
+            continue
+        X_tr, X_te = tr[FEATURE_COLUMNS].copy(), te[FEATURE_COLUMNS].copy()
+        for X in (X_tr, X_te):
+            X["is_postgrad_at_t"] = X["is_postgrad_at_t"].astype("float")
+        m = train_barrier_model(X_tr, tr["dir_up"])
+        p = predict_up_probability(m, X_te)
+        top = p >= p.quantile(0.9)
+        row = {"horizon_m": n, "fold": i, "resolved_rows": len(te),
+               "resolved_share": len(te) / test_mask.sum(), "up_share": te["dir_up"].mean(),
+               "dir_auc": roc_auc_score(te["dir_up"], p), "top10_up_share": te.loc[top, "dir_up"].mean()}
+        for c in ("trailing_price_change_pct", "trailing_buy_sell_ratio", "minutes_since_launch", "trailing_volume_usd"):
+            v = te[c].astype(float)
+            ok = v.notna()
+            row[f"auc_{c}"] = roc_auc_score(te.loc[ok, "dir_up"], v[ok]) if ok.sum() and te.loc[ok, "dir_up"].nunique() == 2 else np.nan
+        dir_rows.append(row)
+    print(f"\nhorizon {n}m -- feature importance (gain), last fold's direction model:")
+    print(pd.Series(m.booster_.feature_importance("gain"), index=m.booster_.feature_name())
+          .sort_values(ascending=False).round(0).to_string())
+print(pd.DataFrame(dir_rows).round(4).to_string(index=False))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Expected-value models (2026-10-09)
+# MAGIC
+# MAGIC The direction check found real signal: among rows that resolved, the
+# MAGIC direction model's top 10% went 2x-first 71-79% of the time (base
+# MAGIC 33-35%, AUC 0.65-0.68). The binary classifier wasted it because it
+# MAGIC treats a -50% stop and a small timeout loss as the same "0", so it
+# MAGIC drifts to volatile tokens. Two ways to rank by expected value instead:
+# MAGIC
+# MAGIC - **A. Regressor on `r_up_{N}m`** -- the rule's realized return is
+# MAGIC   bounded (+100% / about -50%), so unlike 04's 15-minute return it
+# MAGIC   isn't dominated by 100x outliers.
+# MAGIC - **B. Three-class model** (up / down / timeout) + the average timeout
+# MAGIC   return from training: EV = p_up*1.0 + p_down*(-0.5) + p_timeout*avg.
+# MAGIC
+# MAGIC Both are scored on realized net (r minus the row's own round trip).
+# MAGIC The direction check alone can't be traded -- at T you don't know a
+# MAGIC token will resolve -- these can.
+
+# COMMAND ----------
+
+from lightgbm import LGBMClassifier, LGBMRegressor  # noqa: E402
+
+
+def _outcome(df, n):
+    y_col, r_col = label_columns(n)
+    y, r, t = df[y_col], df[r_col], df[f"t_up_{n}m"]
+    down = (y == 0) & (r <= -0.5) & ~((r == -1.0) & (t >= n))
+    return np.select([y == 1, down], [0, 1], default=2)  # 0 up, 1 down, 2 timeout
+
+
+def _concentration_ev(net, tok, ts, fold):
+    g = pd.DataFrame({"net": net, "token_id": tok, "ts": ts, "fold": fold})
+    per_token = g.groupby("token_id")["net"].mean()
+    tsum = g.groupby("token_id")["net"].sum()
+    return {
+        "trades": len(g), "tokens": g["token_id"].nunique(), "net": g["net"].mean(),
+        "net_first_per_token": g.sort_values("ts").drop_duplicates(["fold", "token_id"])["net"].mean(),
+        "net_per_token": per_token.mean(), "tokens_profitable": (per_token > 0).mean(),
+        "top_token_share_of_pnl": tsum.max() / tsum.sum() if tsum.sum() > 0 else np.nan,
+    }
+
+
+ev_rows, ev_picks = [], {}
+for n in HORIZONS:
+    for i, (train_mask, test_mask) in enumerate(folds):
+        X_tr, y_tr, r_tr = prepare_barrier_features(entry_df[train_mask], n)
+        X_te, y_te, r_te = prepare_barrier_features(entry_df[test_mask], n)
+        tr, te = entry_df.loc[X_tr.index], entry_df.loc[X_te.index]
+        net = r_te - te["round_trip"]
+        # A: regressor on the bounded rule return
+        reg = LGBMRegressor(random_state=17, n_estimators=300, learning_rate=0.05, verbose=-1).fit(X_tr, r_tr)
+        ev_a = pd.Series(reg.predict(X_te), index=X_te.index)
+        # B: 3-class
+        c_tr = _outcome(tr, n)
+        clf = LGBMClassifier(random_state=17, n_estimators=300, learning_rate=0.05, verbose=-1).fit(X_tr, c_tr)
+        pr = clf.predict_proba(X_te)
+        to_avg = r_tr[c_tr == 2].mean()
+        ev_b = pd.Series(pr[:, 0] * 1.0 + pr[:, 1] * -0.5 + pr[:, 2] * to_avg, index=X_te.index)
+        for name, ev in (("A_regressor", ev_a), ("B_3class", ev_b)):
+            row = {"horizon_m": n, "fold": i, "model": name,
+                   "spearman": ev.rank().corr(net.rank()), "base_net": net.mean()}
+            for q in (0.01, 0.05):
+                top = ev >= ev.quantile(1 - q)
+                row[f"top{int(q*100)}_net"] = net[top].mean()
+                row[f"top{int(q*100)}_hit"] = y_te[top].mean()
+                row[f"top{int(q*100)}_tokens"] = te.loc[top, "token_id"].nunique()
+            # model's own rule: enter when predicted EV clears this row's cost
+            enter = ev > te["round_trip"]
+            row["enter_n"] = int(enter.sum())
+            row["enter_net"] = net[enter].mean() if enter.any() else np.nan
+            ev_rows.append(row)
+            top5 = ev >= ev.quantile(0.95)
+            ev_picks.setdefault((n, name), []).append(
+                pd.DataFrame({"net": net[top5], "token_id": te.loc[top5, "token_id"],
+                              "ts": te.loc[top5, "assessment_time"], "fold": i,
+                              "dex_venue": te.loc[top5, "dex_venue"], "platform_name": te.loc[top5, "platform_name"],
+                              "is_postgrad_at_t": te.loc[top5, "is_postgrad_at_t"]}))
+        if i == len(folds) - 1:
+            for name, ev in (("A_regressor", ev_a), ("B_3class", ev_b)):
+                dec = pd.qcut(ev.rank(method="first"), 10, labels=False) + 1
+                print(f"\nhorizon {n}m, {name}, last fold -- by predicted-EV decile:")
+                print(pd.DataFrame({"ev": ev, "net": net, "y": y_te, "d": dec}).groupby("d")
+                      .agg(mean_pred_ev=("ev", "mean"), net=("net", "mean"), hit=("y", "mean"))
+                      .round(4).to_string())
+
+print("\nWalk-forward, EV models:")
+print(pd.DataFrame(ev_rows).round(4).to_string(index=False))
+
+for (n, name), parts in ev_picks.items():
+    g = pd.concat(parts, ignore_index=True)
+    print(f"\nhorizon {n}m, {name} -- top 5% concentration, all folds:")
+    print(pd.Series(_concentration_ev(g["net"], g["token_id"], g["ts"], g["fold"])).round(4).to_string())
+    seg = (g.groupby(["dex_venue", "platform_name", "is_postgrad_at_t"], dropna=False, observed=True)
+           .apply(lambda x: pd.Series(_concentration_ev(x["net"], x["token_id"], x["ts"], x["fold"])), include_groups=False)
+           .query("trades >= 100").sort_values("trades", ascending=False))
+    print(seg.round(4).to_string())

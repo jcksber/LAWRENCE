@@ -2335,3 +2335,37 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   horizon AUC, base hit/net, top 1/5/10% hit rate + net after per-row
   costs; last-fold decile calibration; top-5% picks by segment and fold
   with per-token concentration. tests/test_barrier_model.py (CI only).
+- **04b barrier model results (2026-10-09).** AUC 0.79-0.81 (1h) and
+  0.78-0.80 (6h) in every fold, well calibrated (decile mean_p ~= hit
+  rate). Top 1% hit 2x first 26-32% vs base 5-7%. But net after costs is
+  negative everywhere and gets WORSE with predicted probability: last fold
+  decile 1 net -3.6%, decile 10 -14.0% (1h) / -12.6% (6h). Top 5% net -7%
+  to -14% per fold; per-token -30% to -35%. Reason: high-probability
+  tokens are the volatile ones -- when they miss they hit the -50% stop,
+  while low-probability tokens time out with small losses. With misses at
+  ~-50% the rule needs ~34% hit rate + costs to break even; the top 1%
+  reaches 26-32%. Interpretation: the model has learned WHICH tokens will
+  move a lot, not WHICH WAY. 2x and 0.5x are equal distances in log
+  terms, so a 25-30% "up first" rate among movers means strong downward
+  drift, and the features (trailing volume/trades/price change, age,
+  phase) carry little directional information. Near-breakeven pockets
+  (letsbonk.fun, StonkFun quote post-grad at 6h -4%) are small.
+  Next: (1) direction diagnostic -- AUC of up-vs-down on rows that
+  RESOLVED (excluding timeouts), to measure directional skill alone;
+  (2) directional features: 00h's per-bar flow stats (buy/sell volume,
+  largest trade, top-wallet share; 2026-09-13 onward only) and
+  bonding-curve progress.
+- **Direction diagnostic (2026-10-09): there IS directional signal.** On
+  rows that resolved (16-21% of rows; timeouts dropped), predicting 2x-
+  first vs stop-first: AUC 0.65-0.68 in every fold, both horizons; the
+  model's top 10% went 2x-first 71-79% vs base 33-35%. Single features
+  alone are weak (price change 0.46-0.48, i.e. slight mean-reversion; age
+  0.53-0.55; buy/sell ratio and volume ~0.49-0.51) -- the signal is in
+  combinations. Top importance: trailing volume, price change, age, buy
+  count. So the binary classifier's failure was the target, not the
+  features: up-vs-(down OR timeout) lumps a -50% stop with a small timeout
+  loss and pushes the model to volatile tokens. Caveat: "among resolved
+  rows" is not tradeable by itself (resolution isn't known at T). Added
+  04b EV cell: (A) regressor on the bounded rule return r_up_{N}m, (B)
+  3-class up/down/timeout model -> EV; scored on realized net with deciles,
+  top 1/5%, "enter if EV > own cost", and per-token concentration.
