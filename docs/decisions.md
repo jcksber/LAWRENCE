@@ -2317,3 +2317,21 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   numpy-vectorised, one scan serves all horizons (busy 3,000-bar token:
   256 rows in 0.16 s). Next:
   re-run 02, check the barrier stats cell, then a classifier in 04.
+- **Barrier base rates (02, 2026-10-09).** Hit 2x before -50%, by venue x
+  phase at T (1h / 6h / 24h): pump.fun curve 5.0 / 6.0 / 6.8% (10.7M
+  rows), mean rule return before costs -3.4 / -3.7 / -3.7%, median
+  resolution = the full horizon (most rows time out: quiet curve tokens
+  keep their price, so the stop rarely triggers). pump.fun post-grad 11.3
+  / 16.0 / 28.3%, mean -7.3 / -9.8 / -9.2%. LaunchLab curve 5.3 / 6.9 /
+  8.1%, mean -4.1 / -6.0 / -6.4%. LaunchLab post-grad 12.8 / 21.7 /
+  34.4%, mean -3.4 / -3.4 / +1.0%. The 24h horizon is censored for 31-39%
+  of post-grad rows and censoring only removes unresolved rows, so its
+  hit rate/mean are biased up -- 04b uses 1h and 6h only. Buying
+  everything loses before costs in every cell; the model must find a
+  slice with a much higher hit rate.
+- **04b written (2026-10-09):** `src/models/barrier_model.py`
+  (LGBMClassifier on entry_model's features + minutes_since_launch +
+  is_postgrad_at_t; censored rows excluded) and notebook 04b: per fold x
+  horizon AUC, base hit/net, top 1/5/10% hit rate + net after per-row
+  costs; last-fold decile calibration; top-5% picks by segment and fold
+  with per-token concentration. tests/test_barrier_model.py (CI only).
