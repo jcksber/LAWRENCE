@@ -2369,3 +2369,98 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   04b EV cell: (A) regressor on the bounded rule return r_up_{N}m, (B)
   3-class up/down/timeout model -> EV; scored on realized net with deciles,
   top 1/5%, "enter if EV > own cost", and per-token concentration.
+- **04b EV models (2026-10-10).** (A) LightGBM regressor on the bounded
+  rule return r_up: Spearman 0.33-0.38 every fold (best ranking so far;
+  04's 15-min regressor was 0.22-0.29). Last-fold deciles monotone, but
+  the top decile is ~ -cost (-3.4% at 1h, -3.2% at 6h) with a LOW hit
+  rate (3-6%): the regressor's top picks are quiet tokens whose gross
+  return is ~0, so it mostly learns "avoid losses", not "find winners".
+  Top 1% at 6h: -2.6 / +3.2 / -0.5 / +3.3 / +0.7% by fold (~1-1.7k
+  tokens each, bounded returns) -- the first top-1% that is positive in 3
+  of 5 folds with many tokens, but ~+0.8% mean is within noise. "Enter if
+  EV > own cost" at 6h: -2.6 / +2.9 / -1.2 / +1.1 / -0.5%. Top-5% pooled:
+  -1.9% (6h), per-token -4.8%, 9.5% of tokens profitable. (B) 3-class EV
+  is broken: Spearman -0.07 to -0.13 (inverse ranking) -- the fixed -50%
+  / average-timeout payoffs don't match reality; dropped.
+  **Segment lead: graduated StonkFun at 6h, model A top 5%: +1.6%, 48k
+  trades, 1,708 tokens, 34% of tokens profitable, top token 9% of profit**
+  -- broad, not one-token. Likely helped by cost: post-graduation CPMM
+  fee is 0.25%/side vs ~1.25% on the curve, so the round trip is ~1.5%
+  instead of ~3.5%. pump.fun graduated at 6h: -0.25%. Next: a model
+  trained on post-graduation rows only (cheaper venue, 1.2M rows), and
+  the flow features.
+- **04b post-graduation-only cell added (2026-10-10):** model A trained
+  and scored on is_postgrad_at_t rows only, 1h and 6h; per-fold Spearman,
+  top 1/5/10% net, "enter if EV > own cost" (n, net, tokens), last-fold
+  deciles + feature importance, top-5% concentration by venue/platform/
+  unit and by fold. Note on fees: LaunchLab graduates (CPMM) pay 0.25%
+  per side, pump.fun graduates (PumpSwap) still 1.20%.
+- **Post-graduation-only model A (2026-10-10): first result that looks
+  like an edge -- not yet proven.** 6h horizon, top 5% by predicted EV:
+  pooled +3.0% net after costs (29.3k trades, 2,618 tokens, 36% of tokens
+  profitable, top token 6.8% of profit); by fold -3.7 / +6.6 / +4.4 /
+  +6.6 / +1.8% (4 of 5 positive). By segment: StonkFun usd graduates
+  +8.9% (5.1k trades, 369 tokens, per-token +8.6%, 50% of tokens
+  profitable, top token 7%); StonkFun quote +2.6% (per-token -1.0%);
+  pump.fun graduates +1.6% (per-token -5.7%). 1h horizon: -5.1% pooled,
+  negative every fold. **Caveats before trusting it:** (1) first-signal-
+  per-token pooled -0.4% and per-token -2.5% -- much of the trade-level
+  profit comes from repeated, overlapping entries on the same tokens
+  (T is sampled every minute in the first hour); a bot holds one position
+  per token, so this needs a non-overlapping backtest. (2) Selection: the
+  post-grad slice was chosen after seeing it in the previous run, so the
+  folds are not a clean out-of-sample test -- data after 2026-10-03 is.
+  (3) Entry at the last close with 0.5%/side slippage; graduated pools,
+  especially quote-priced StonkFun ones, may be thinner. (4) Quote-priced
+  returns ignore the quote token's own move.
+- **Non-overlapping backtest cell added to 04b (2026-10-10):** post-grad
+  model A, 6h; one position per token, held to 2x / -50% / 6h, re-entry
+  only on a new signal after exit. Cutoffs: 95th percentile of predicted
+  EV on TRAINING rows (fixed before the test period -- the honest one)
+  vs the test-period 95th percentile (the earlier, slightly peeking one).
+  Reports trades, tokens, mean/median net, hit rate, per-token, share of
+  profitable tokens, top-token share, total stakes won, max concurrent
+  positions; by fold and segment. Logic checked on synthetic data.
+- **Non-overlapping backtest (2026-10-10): the edge mostly survives.**
+  Post-grad model A, 6h, one position per token, cutoff fixed from the
+  TRAINING period (train_q95): 6,718 trades over 2,924 tokens, mean net
+  **+2.3%** per trade after costs, +152 stakes total, median -21% (most
+  trades lose; 27% hit 2x), top token 3.5% of profit, max 64 positions
+  open at once. By fold -4.9 / +2.1 / +2.6 / +6.6 / -0.2% (3 of 5
+  positive; fold-mean +1.2%). Per-token mean -2.3% -- the profit comes
+  from re-entering tokens that keep working, while one-shot tokens lose
+  on average. Segments: StonkFun usd graduates +6.3% (1,459 trades, 520
+  tokens, per-token +3.4%, 46% of tokens profitable); StonkFun quote
+  +2.6%; pump.fun graduates -0.3%. test_q95 cutoff similar (+1.7%).
+  Rough significance: ~2 standard errors overall (clustering by token),
+  fold-to-fold t ~1 -- suggestive, not established; and the post-grad /
+  StonkFun slice was chosen after seeing it.
+- **PRE-REGISTERED out-of-sample test (written 2026-10-10, before any
+  data after 2026-10-03 is pulled or looked at).** Rule, frozen:
+  1. Model: LGBMRegressor (random_state 17, 300 trees, lr 0.05) on
+     r_up_360m, features = barrier_model.FEATURE_COLUMNS, trained on ALL
+     post-graduation rows with T before 2026-10-03.
+  2. Entry: post-graduation rows only; enter when predicted EV >= the
+     95th percentile of predicted EV on that training set; one position
+     per token; exit at 2x / -50% / 6h; re-entry only on a new signal
+     after exit.
+  3. Costs: per-row round trip as in 04/04b (venue + phase fees, 0.5%
+     slippage per side), plus a stress case with 1.0% per side.
+  4. Test data: T from 2026-10-03 through the last day with 24h of bars
+     after it, never used for training or tuning.
+  5. Pass = mean net per trade > 0 overall AND for StonkFun usd
+     graduates, with >= 300 trades overall. Anything else = fail; no
+     re-tuning on the test data.
+- **Window 3 + out-of-sample cell set up (2026-10-11).** 00h WINDOW_END
+  -> 2026-10-10 (MAX_CHUNKS None; 28 new chunks). 00f WINDOWS gains
+  (10-03, 10-10); CPMM step 1/2 now loop over every window from 2 on;
+  step 2's checks generalised (all step-1 days from window 2 through
+  that day must be done; skip mints with CPMM bars before that day);
+  MAX_PUMPSWAP_CHUNKS / MAX_CPMM_BAR_DAYS -> None (costs known). 02/03
+  CURVE_DATA_END -> 2026-10-10. Estimated ~3-3.5k credits (00h ~2.1k,
+  00f ~1.2k). New last cell in 04b runs the pre-registered rule exactly:
+  reads ALL post-grad rows from Gold (no token sampling), trains once on
+  T < 10-03, cutoff = train 95th pct, scores T >= 10-03 one position per
+  token, base and 1%/side-slippage costs, by segment and day, and prints
+  the pre-registered PASS/FAIL. Known small leak: training rows within
+  6h before 10-03 have labels that end after it.

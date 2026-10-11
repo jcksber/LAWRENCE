@@ -82,6 +82,9 @@ DUNE_API_KEY = dbutils.secrets.get(scope="lawrence", key="dune_api_key")
 WINDOWS = [
     (datetime(2026, 8, 14, tzinfo=timezone.utc), datetime(2026, 9, 13, tzinfo=timezone.utc)),
     (datetime(2026, 9, 13, tzinfo=timezone.utc), datetime(2026, 10, 3, tzinfo=timezone.utc)),
+    # Window 3 (2026-10-11): the pre-registered out-of-sample test period
+    # (docs/decisions.md). Never used for training or tuning.
+    (datetime(2026, 10, 3, tzinfo=timezone.utc), datetime(2026, 10, 10, tzinfo=timezone.utc)),
 ]
 BACKFILL_WINDOW_START, BACKFILL_WINDOW_END = WINDOWS[0]  # window 1 (REPLACES_VENUE applies only here)
 
@@ -89,10 +92,10 @@ HORIZON_HOURS = 24  # 2026-09-26 decision: 1m bars, 24h (see decisions.md)
 PUMPSWAP_CHUNK_HOURS = 6  # ~54k bars/chunk at 00e's measured rate
 
 # 1 = measure one chunk first. None = run everything not yet done.
-MAX_PUMPSWAP_CHUNKS = 1
+MAX_PUMPSWAP_CHUNKS = None  # 2026-10-11: per-chunk cost known (~23-30 credits)
 # 2026-10-04: same guard for window 2's per-day CPMM bars (step 2). Step 1
 # (20 small first-trade queries) always runs in full first.
-MAX_CPMM_BAR_DAYS = 1
+MAX_CPMM_BAR_DAYS = None  # 2026-10-11: per-day cost known (~40 credits)
 
 POOLS_TABLE = "lawrence.bronze.pool_metadata"
 BARS_TABLE = "lawrence.bronze.postgrad_bars_1m"
@@ -238,16 +241,18 @@ print(f"{len(done)} chunk(s) already done -- will be skipped.")
 # Per window, ordered cheapest-first. Each entry: (job, chunk_start, chunk_end, sql, mapper, schema, table)
 def _cpmm_day_bars_sql(day_start: datetime, day_end: datetime):
     """Step 2 SQL for one graduation day, built at run time from step 1's
-    table. A pool's graduation = its earliest first trade across ALL days;
-    mints that already have window-1 CPMM bars are skipped (they graduated
-    before window 2). Returns None if no pool graduated that day."""
-    w2_days = {(d, d + timedelta(days=1)) for d in _days(*WINDOWS[1])}
-    missing = [d for d, e in w2_days if ("cpmm_first_trades", d.isoformat(), e.isoformat()) not in done]
+    table. A pool's graduation = its earliest first trade across ALL days,
+    so every step-1 day from window 2's start through this day must be done.
+    Mints that already have CPMM bars from before this day are skipped (they
+    graduated earlier). Returns None if no pool graduated that day."""
+    needed = _days(WINDOWS[1][0], day_end)
+    missing = [d for d in needed
+               if ("cpmm_first_trades", d.isoformat(), (d + timedelta(days=1)).isoformat()) not in done]
     if missing:
         raise RuntimeError(f"{len(missing)} cpmm_first_trades day(s) not done yet -- graduation times would be wrong")
-    w1_mints = (
+    w1_mints = (  # "already graduated before this day" (name kept from window 2)
         spark.table(BARS_TABLE)
-        .filter((F.col("venue") == "raydium_cpmm") & (F.col("bar_start") < F.lit(WINDOWS[1][0])))
+        .filter((F.col("venue") == "raydium_cpmm") & (F.col("bar_start") < F.lit(day_start)))
         .select("base_mint").distinct()
     )
     grads = (
@@ -282,13 +287,14 @@ for _w_start, _w_end in WINDOWS:
 # Window 1 CPMM: the original whole-window query (done; skipped).
 jobs.append(("bars_raydium_cpmm_v2", *WINDOWS[0],
              cpmm_launchlab_bars_sql(*WINDOWS[0], HORIZON_HOURS), to_bar_row, _BARS_SCHEMA, BARS_TABLE))
-# Window 2 CPMM, split per day (2026-10-04): all step-1 days first, then step 2.
-for _d in _days(*WINDOWS[1]):
+# Windows 2+ CPMM, split per day (2026-10-04): all step-1 days first, then step 2.
+_cpmm_days = [d for w in WINDOWS[1:] for d in _days(*w)]
+for _d in _cpmm_days:
     _e = _d + timedelta(days=1)
     jobs.append(("cpmm_first_trades", _d, _e, cpmm_first_trades_sql(_d, _e),
                  (lambda r, ts, _day=_d.date().isoformat(): to_first_trade_row(r, _day, ts)),
                  _FIRST_TRADES_SCHEMA, FIRST_TRADES_TABLE))
-for _d in _days(*WINDOWS[1]):
+for _d in _cpmm_days:
     _e = _d + timedelta(days=1)
     jobs.append(("bars_cpmm_v3", _d, _e, (lambda _d=_d, _e=_e: _cpmm_day_bars_sql(_d, _e)),
                  to_bar_row, _BARS_SCHEMA, BARS_TABLE))

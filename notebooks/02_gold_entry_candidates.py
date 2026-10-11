@@ -68,7 +68,7 @@ PRICE_TABLE = "lawrence.silver.token_price_1m"
 SILVER_TABLE = PRICE_TABLE  # kept so the diagnostics below read the same table
 # End of the bonding-curve backfill (00c's BACKFILL_WINDOW_END): a curve-only
 # token is unobserved after this, so labels reaching past it are censored.
-CURVE_DATA_END = datetime(2026, 10, 3, tzinfo=timezone.utc)  # 2026-10-04: + 00h curve bars (was 09-13)
+CURVE_DATA_END = datetime(2026, 10, 10, tzinfo=timezone.utc)  # 2026-10-11: + out-of-sample window (was 10-03, before that 09-13)
 GOLD_TABLE = "lawrence.gold.entry_candidates"
 
 # COMMAND ----------

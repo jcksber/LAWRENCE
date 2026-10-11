@@ -61,7 +61,9 @@ DUNE_API_KEY = dbutils.secrets.get(scope="lawrence", key="dune_api_key")
 # FIXED window + chunk sizes: boundaries must not change between runs, or
 # the progress skip-check won't match. Same window 2 as 00f.
 WINDOW_START = datetime(2026, 9, 13, tzinfo=timezone.utc)
-WINDOW_END = datetime(2026, 10, 3, tzinfo=timezone.utc)
+# 2026-10-11: extended to 10-10 for the pre-registered out-of-sample test
+# (window 3, see docs/decisions.md). Chunks already done are skipped.
+WINDOW_END = datetime(2026, 10, 10, tzinfo=timezone.utc)
 CHUNK_HOURS = {
     "pumpdotfun": 6,          # ~47k bars per chunk
     "raydium_launchlab": 24,  # ~81k bars/day; daily so the pool lookup runs once per day
@@ -72,7 +74,7 @@ SQL_BUILDERS = {
 }
 
 # 2 = first two chunks (both pump.fun) to check credits. None = run everything not done.
-MAX_CHUNKS = 2
+MAX_CHUNKS = None
 
 BARS_TABLE = "lawrence.bronze.curve_bars_1m"
 PROGRESS_TABLE = "lawrence.bronze._curve_bars_progress"

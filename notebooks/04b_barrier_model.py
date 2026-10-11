@@ -388,3 +388,270 @@ for (n, name), parts in ev_picks.items():
            .apply(lambda x: pd.Series(_concentration_ev(x["net"], x["token_id"], x["ts"], x["fold"])), include_groups=False)
            .query("trades >= 100").sort_values("trades", ascending=False))
     print(seg.round(4).to_string())
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Post-graduation only (2026-10-10)
+# MAGIC
+# MAGIC Graduated StonkFun was the one broad positive pocket (+1.6% at 6h,
+# MAGIC 1,708 tokens), helped by the cheaper venue: CPMM / PumpSwap fees are
+# MAGIC 0.25% / 1.20% per side vs ~1.25% on the curve. Same model A, trained
+# MAGIC and scored on post-graduation rows only.
+
+# COMMAND ----------
+
+# Post-graduation-only EV model (2026-10-10). Self-contained: needs cells 1-6.
+from lightgbm import LGBMRegressor
+
+def _pg_conc(g):
+    pt = g.groupby("token_id")["net"].mean(); s = g.groupby("token_id")["net"].sum()
+    return pd.Series({"trades": len(g), "tokens": g["token_id"].nunique(), "net": g["net"].mean(),
+                      "net_first_per_token": g.sort_values("ts").drop_duplicates([c for c in ("fold", "token_id") if c in g.columns])["net"].mean(),
+                      "net_per_token": pt.mean(), "tokens_profitable": (pt > 0).mean(),
+                      "top_token_share_of_pnl": s.max() / s.sum() if s.sum() > 0 else np.nan})
+
+pg = entry_df["is_postgrad_at_t"].fillna(False).astype(bool)
+print(f"post-graduation rows: {pg.sum():,} of {len(entry_df):,}; mean round trip {entry_df.loc[pg, 'round_trip'].mean():.2%}")
+pg_rows, pg_picks = [], []
+for n in HORIZONS:
+    for i, (train_mask, test_mask) in enumerate(folds):
+        X_tr, _, r_tr = prepare_barrier_features(entry_df[train_mask & pg], n)
+        X_te, y_te, r_te = prepare_barrier_features(entry_df[test_mask & pg], n)
+        if len(X_tr) < 1000 or len(X_te) < 100:
+            continue
+        te = entry_df.loc[X_te.index]
+        net = r_te - te["round_trip"]
+        reg = LGBMRegressor(random_state=17, n_estimators=300, learning_rate=0.05, verbose=-1).fit(X_tr, r_tr)
+        ev = pd.Series(reg.predict(X_te), index=X_te.index)
+        row = {"horizon_m": n, "fold": i, "rows": len(X_te), "spearman": ev.rank().corr(net.rank()),
+               "base_net": net.mean(), "base_hit": y_te.mean()}
+        for q in (0.01, 0.05, 0.10):
+            top = ev >= ev.quantile(1 - q)
+            row[f"top{int(q*100)}_net"] = net[top].mean()
+            row[f"top{int(q*100)}_tokens"] = te.loc[top, "token_id"].nunique()
+        enter = ev > te["round_trip"]
+        row["enter_n"], row["enter_net"] = int(enter.sum()), (net[enter].mean() if enter.any() else np.nan)
+        row["enter_tokens"] = te.loc[enter, "token_id"].nunique()
+        pg_rows.append(row)
+        top5 = ev >= ev.quantile(0.95)
+        pg_picks.append(pd.DataFrame({"horizon_m": n, "fold": i, "net": net[top5], "token_id": te.loc[top5, "token_id"],
+                                      "ts": te.loc[top5, "assessment_time"], "dex_venue": te.loc[top5, "dex_venue"],
+                                      "platform_name": te.loc[top5, "platform_name"], "price_unit": te.loc[top5, "price_unit"]}))
+        if i == len(folds) - 1:
+            dec = pd.qcut(ev.rank(method="first"), 10, labels=False) + 1
+            print(f"\npost-grad, horizon {n}m, last fold -- by predicted-EV decile:")
+            print(pd.DataFrame({"ev": ev, "net": net, "y": y_te, "d": dec}).groupby("d")
+                  .agg(mean_pred_ev=("ev", "mean"), net=("net", "mean"), hit=("y", "mean"), rows=("y", "size"))
+                  .round(4).to_string())
+            print("feature importance (gain):")
+            print(pd.Series(reg.booster_.feature_importance("gain"), index=reg.booster_.feature_name())
+                  .sort_values(ascending=False).round(0).to_string())
+
+print("\nWalk-forward, post-graduation only (model A):")
+print(pd.DataFrame(pg_rows).round(4).to_string(index=False))
+pp = pd.concat(pg_picks, ignore_index=True)
+for n in HORIZONS:
+    g = pp[pp["horizon_m"] == n]
+    print(f"\npost-grad, horizon {n}m -- top 5% concentration, all folds:")
+    print(_pg_conc(g).round(4).to_string())
+    print(g.groupby(["dex_venue", "platform_name", "price_unit"], dropna=False, observed=True)
+          .apply(_pg_conc, include_groups=False).query("trades >= 100")
+          .sort_values("trades", ascending=False).round(4).to_string())
+    print(f"by fold:")
+    print(g.groupby("fold").apply(_pg_conc, include_groups=False).round(4).to_string())
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Non-overlapping backtest (2026-10-10)
+# MAGIC
+# MAGIC The post-grad +3.0% counted overlapping entries on the same token
+# MAGIC (T sampled every minute). A bot holds one position per token: this
+# MAGIC replays the signals that way, with an entry cutoff fixed from the
+# MAGIC training period. `sum_net_stakes` = total profit in units of one
+# MAGIC stake; `max_concurrent` = most positions open at once (capital needed).
+
+# COMMAND ----------
+
+# Non-overlapping backtest, post-graduation model A, 6h (2026-10-10). Needs cells 1-6.
+# One position per token at a time: enter on a signal only if not already
+# holding that token; hold until 2x / -50% / 6h (t_up_360m); a new entry needs
+# a NEW signal after the exit. Two entry cutoffs:
+#   "train_q95" -- the 95th percentile of predicted EV on the TRAINING rows
+#                  (fixed before the test period starts -- the honest one)
+#   "test_q95"  -- 95th percentile within the test period (what the earlier
+#                  table used; peeks at the test distribution, for comparison)
+from lightgbm import LGBMRegressor
+
+N = 360
+pg = entry_df["is_postgrad_at_t"].fillna(False).astype(bool)
+
+
+def _non_overlapping(sig):
+    """sig: one fold's signals (token_id, ts, minutes, net). Keep a signal
+    only if the token has no open position at ts."""
+    sig = sig.sort_values(["token_id", "ts"])
+    keep, open_until = [], {}
+    for idx, tok, ts, mins in zip(sig.index, sig["token_id"], sig["ts"], sig["minutes"]):
+        if tok in open_until and ts < open_until[tok]:
+            continue
+        keep.append(idx)
+        open_until[tok] = ts + pd.Timedelta(minutes=float(mins))
+    return sig.loc[keep]
+
+
+def _max_concurrent(trades):
+    ev = pd.concat([pd.Series(1, index=trades["ts"]),
+                    pd.Series(-1, index=trades["ts"] + pd.to_timedelta(trades["minutes"], unit="m"))]).sort_index()
+    return int(ev.cumsum().max()) if len(ev) else 0
+
+
+def _summ(t):
+    pt = t.groupby("token_id")["net"].mean(); s = t.groupby("token_id")["net"].sum()
+    return pd.Series({"trades": len(t), "tokens": t["token_id"].nunique(), "net": t["net"].mean(),
+                      "median_net": t["net"].median(), "hit_2x": t["y"].mean(),
+                      "net_per_token": pt.mean(), "tokens_profitable": (pt > 0).mean(),
+                      "top_token_share_of_pnl": s.max() / s.sum() if s.sum() > 0 else np.nan,
+                      "sum_net_stakes": t["net"].sum(), "max_concurrent": _max_concurrent(t)})
+
+
+all_trades = []
+for i, (train_mask, test_mask) in enumerate(folds):
+    X_tr, _, r_tr = prepare_barrier_features(entry_df[train_mask & pg], N)
+    X_te, y_te, r_te = prepare_barrier_features(entry_df[test_mask & pg], N)
+    if len(X_tr) < 1000 or len(X_te) < 100:
+        continue
+    te = entry_df.loc[X_te.index]
+    reg = LGBMRegressor(random_state=17, n_estimators=300, learning_rate=0.05, verbose=-1).fit(X_tr, r_tr)
+    ev_tr = reg.predict(X_tr)
+    ev = pd.Series(reg.predict(X_te), index=X_te.index)
+    base = pd.DataFrame({"token_id": te["token_id"], "ts": pd.to_datetime(te["assessment_time"], utc=True),
+                         "minutes": te[f"t_up_{N}m"].fillna(N), "net": r_te - te["round_trip"], "y": y_te,
+                         "dex_venue": te["dex_venue"], "platform_name": te["platform_name"],
+                         "price_unit": te["price_unit"], "fold": i})
+    for name, cut in (("train_q95", np.quantile(ev_tr, 0.95)), ("test_q95", ev.quantile(0.95))):
+        sig = base[ev >= cut]
+        t = _non_overlapping(sig).assign(cutoff=name, signals=len(sig))
+        all_trades.append(t)
+
+trades = pd.concat(all_trades, ignore_index=True)
+for name in ("train_q95", "test_q95"):
+    t = trades[trades["cutoff"] == name]
+    print(f"\n=== cutoff {name}: one position per token, 6h ===")
+    print("all folds:"); print(_summ(t).round(4).to_string())
+    print("by fold:"); print(t.groupby("fold").apply(_summ, include_groups=False).round(4).to_string())
+    print("by segment:")
+    print(t.groupby(["dex_venue", "platform_name", "price_unit"], dropna=False, observed=True)
+          .apply(_summ, include_groups=False).query("trades >= 30")
+          .sort_values("trades", ascending=False).round(4).to_string())
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## PRE-REGISTERED out-of-sample test (2026-10-11)
+# MAGIC
+# MAGIC Rule frozen in docs/decisions.md on 2026-10-10, before any data after
+# MAGIC 2026-10-03 was pulled. Run once, after 00h/00f window 3 -> 01b -> 02.
+# MAGIC Do not change the rule after seeing this output.
+
+# COMMAND ----------
+
+# PRE-REGISTERED out-of-sample test (rule frozen 2026-10-10, docs/decisions.md).
+# Self-contained: reads post-graduation rows for ALL tokens straight from Gold
+# (no token sampling), trains once on T < 2026-10-03, applies the frozen rule
+# to T >= 2026-10-03. Needs only the imports cell (3).
+from datetime import datetime, timezone
+from lightgbm import LGBMRegressor
+
+OOS_START = datetime(2026, 10, 3, tzinfo=timezone.utc)
+N = 360
+y_col, r_col = label_columns(N)
+cols = ["token_id", "assessment_time", "price_unit", *FEATURE_COLUMNS, y_col, r_col, f"t_up_{N}m"]
+df = (spark.table("lawrence.gold.entry_candidates").filter("is_postgrad_at_t = true")
+      .select(*dict.fromkeys(cols)).toPandas())
+df["assessment_time"] = pd.to_datetime(df["assessment_time"], utc=True)
+df = set_categorical_dtypes(df.sort_values("assessment_time").reset_index(drop=True))
+
+# Per-token LaunchLab curve fee (same as the platform-fee cell; only matters
+# for curve rows, but kept identical so costs match 04/04b exactly).
+_cfg = pd.read_csv("../data/reference/launchlab_platform_configs.csv")
+_cfg["creator_fee_rate"] = _cfg["creator_fee_rate"].fillna(0)
+_ll = (spark.table("lawrence.bronze.pool_metadata")
+       .filter("venue = 'raydium_launchlab' AND platform_config IS NOT NULL")
+       .groupBy(F.col("base_mint").alias("token_id"))
+       .agg(F.max("platform_config").alias("platform_config"), F.max("platform_name").alias("platform_name"))
+       .toPandas()
+       .merge(_cfg[["account_platform_config", "fee_rate", "creator_fee_rate"]],
+              left_on="platform_config", right_on="account_platform_config", how="left"))
+_ll["ll_curve_fee_bps"] = launchlab_curve_fee_bps(_ll["fee_rate"], _ll["creator_fee_rate"])
+df = df.merge(_ll[["token_id", "platform_name", "ll_curve_fee_bps"]], on="token_id", how="left")
+_is_ll = df["dex_venue"] == "raydium_launchlab"
+df["platform_name"] = df["platform_name"].where(_is_ll).fillna("-")
+df.loc[_is_ll & (df["platform_name"] == "-"), "platform_name"] = "unknown"
+df["fees_bps"] = venue_fee_bps(df["dex_venue"], df["is_postgrad_at_t"], df["ll_curve_fee_bps"])
+
+train = df[(df["assessment_time"] < OOS_START) & df[y_col].notna()]
+test = df[(df["assessment_time"] >= OOS_START) & df[y_col].notna()]
+print(f"train: {len(train):,} rows, {train['token_id'].nunique():,} tokens, "
+      f"{train['assessment_time'].min()} -> {train['assessment_time'].max()}")
+print(f"test:  {len(test):,} rows, {test['token_id'].nunique():,} tokens, "
+      f"{test['assessment_time'].min()} -> {test['assessment_time'].max()}")
+
+X_tr, _, r_tr = prepare_barrier_features(train, N)
+X_te, y_te, r_te = prepare_barrier_features(test, N)
+reg = LGBMRegressor(random_state=17, n_estimators=300, learning_rate=0.05, verbose=-1).fit(X_tr, r_tr)
+cut = float(np.quantile(reg.predict(X_tr), 0.95))
+ev = pd.Series(reg.predict(X_te), index=X_te.index)
+te = test.loc[X_te.index]
+print(f"frozen cutoff (train 95th pct of predicted EV): {cut:.4f}; test signals: {(ev >= cut).sum():,}")
+
+
+def _non_overlapping(sig):
+    sig = sig.sort_values(["token_id", "ts"])
+    keep, open_until = [], {}
+    for idx, tok, ts, mins in zip(sig.index, sig["token_id"], sig["ts"], sig["minutes"]):
+        if tok in open_until and ts < open_until[tok]:
+            continue
+        keep.append(idx)
+        open_until[tok] = ts + pd.Timedelta(minutes=float(mins))
+    return sig.loc[keep]
+
+
+def _summ(t):
+    pt = t.groupby("token_id")["net"].mean(); s = t.groupby("token_id")["net"].sum()
+    return pd.Series({"trades": len(t), "tokens": t["token_id"].nunique(), "net": t["net"].mean(),
+                      "median_net": t["net"].median(), "hit_2x": t["y"].mean(),
+                      "net_per_token": pt.mean(), "tokens_profitable": (pt > 0).mean(),
+                      "top_token_share_of_pnl": s.max() / s.sum() if s.sum() > 0 else np.nan,
+                      "sum_net_stakes": t["net"].sum()})
+
+
+results = {}
+for label, slip in (("base (0.5%/side slippage)", 50), ("stress (1.0%/side slippage)", 100)):
+    rt = round_trip_cost(te["fees_bps"], slippage_bps=slip)
+    sig = pd.DataFrame({"token_id": te["token_id"], "ts": te["assessment_time"],
+                        "minutes": te[f"t_up_{N}m"].fillna(N), "net": r_te - rt, "y": y_te,
+                        "dex_venue": te["dex_venue"], "platform_name": te["platform_name"],
+                        "price_unit": te["price_unit"], "day": te["assessment_time"].dt.date})[ev >= cut]
+    t = _non_overlapping(sig)
+    results[label] = t
+    print(f"\n=== OUT-OF-SAMPLE, {label} ===")
+    print(_summ(t).round(4).to_string())
+    print("by segment:")
+    print(t.groupby(["dex_venue", "platform_name", "price_unit"], dropna=False, observed=True)
+          .apply(_summ, include_groups=False).query("trades >= 20")
+          .sort_values("trades", ascending=False).round(4).to_string())
+    print("by day:")
+    print(t.groupby("day").apply(_summ, include_groups=False)[["trades", "tokens", "net", "hit_2x", "sum_net_stakes"]]
+          .round(4).to_string())
+
+# Pre-registered pass/fail (base costs): overall net > 0, StonkFun usd net > 0, >= 300 trades.
+t = results["base (0.5%/side slippage)"]
+sfu = t[(t["platform_name"] == "StonkFun") & (t["price_unit"] == "usd")]
+checks = {"trades >= 300": len(t) >= 300, "overall net > 0": t["net"].mean() > 0,
+          "StonkFun usd net > 0": len(sfu) > 0 and sfu["net"].mean() > 0}
+print("\nPRE-REGISTERED CHECKS:", checks, "->", "PASS" if all(checks.values()) else "FAIL")
