@@ -2464,3 +2464,15 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   token, base and 1%/side-slippage costs, by segment and day, and prints
   the pre-registered PASS/FAIL. Known small leak: training rows within
   6h before 10-03 have labels that end after it.
+- **Social data architecture decided (2026-10-16, Jack): option C.**
+  Social data gets its own Bronze -> Silver -> Gold pipeline that turns
+  raw posts into a few point-in-time numeric features per (token, T)
+  (mentions 1h/24h + growth, unique authors, bot share, follower-weighted
+  reach, first-mention delay after launch, deployer/official posts).
+  Those join the SAME LightGBM model as extra columns -- one model, so
+  trees can learn social x on-chain interactions. Missing = no posts
+  (NaN, not 0). Rules: only posts created before T; beware deleted
+  posts missing from historical pulls (train/serve skew); kept only if a
+  with/without walk-forward comparison shows out-of-sample lift. Order:
+  on-chain flow features first (free, already in Silver from 09-13),
+  social after, and both only after the pre-registered test result.
