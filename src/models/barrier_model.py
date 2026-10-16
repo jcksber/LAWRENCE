@@ -25,6 +25,22 @@ from models.entry_model import FEATURE_COLUMNS as BASE_FEATURE_COLUMNS
 
 EXTRA_FEATURE_COLUMNS = ["minutes_since_launch", "is_postgrad_at_t"]
 FEATURE_COLUMNS = BASE_FEATURE_COLUMNS + EXTRA_FEATURE_COLUMNS
+# FEATURE_COLUMNS is FROZEN by the 2026-10-03 pre-registered test
+# (docs/decisions.md) -- new features go in a separate list, compared
+# against it out of sample, never edited into it.
+
+# 2026-10-16: on-chain flow features (gold_features.FLOW_FEATURE_KEYS).
+FLOW_FEATURE_COLUMNS = [
+    "flow_buy_share_15m",
+    "flow_max_trade_share_15m",
+    "flow_top_trader_share_15m",
+    "curve_buy_share",
+    "curve_max_trade_share",
+    "curve_top_trader_share",
+    "curve_top_trader_share_max",
+    "minutes_since_graduation",
+]
+FLOW_MODEL_FEATURE_COLUMNS = FEATURE_COLUMNS + FLOW_FEATURE_COLUMNS
 
 
 def label_columns(horizon_minutes: int) -> tuple[str, str]:
@@ -33,13 +49,13 @@ def label_columns(horizon_minutes: int) -> tuple[str, str]:
 
 
 def prepare_barrier_features(
-    candidates: pd.DataFrame, horizon_minutes: int
+    candidates: pd.DataFrame, horizon_minutes: int, feature_columns: list[str] | None = None
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """(X, y, r) for rows whose barrier label isn't censored. Assumes
     entry_model.set_categorical_dtypes already ran on the full dataset."""
     y_col, r_col = label_columns(horizon_minutes)
     df = candidates[candidates[y_col].notna()]
-    X = df[FEATURE_COLUMNS].copy()
+    X = df[feature_columns or FEATURE_COLUMNS].copy()
     # bool -> float so LightGBM treats it as numeric with NaN = unknown
     X["is_postgrad_at_t"] = X["is_postgrad_at_t"].astype("float")
     return X, df[y_col].astype(int), df[r_col].astype(float)

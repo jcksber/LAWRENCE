@@ -312,6 +312,103 @@ def _v2_features(trades: TokenTrades, t: datetime, launch_time: Any) -> dict[str
     }
 
 
+# 2026-10-16: on-chain flow features (see docs/decisions.md, "Flow features").
+# From the per-bar trader stats Dune curve bars carry (00h, 2026-09-13 on):
+# quote-unit buy / sell volume, the largest single trade, and the share of
+# the bar's quote volume from its biggest trader. Silver trade bars (before
+# 09-13) have all but top_trader_share; postgrad bars have none (00f doesn't
+# pull them), so post-graduation rows only get the CURVE-LIFE versions --
+# a fixed summary of how the token traded before graduating.
+FLOW_WINDOW = timedelta(minutes=15)
+FLOW_FEATURE_KEYS = (
+    "flow_buy_share_15m",
+    "flow_max_trade_share_15m",
+    "flow_top_trader_share_15m",
+    "curve_buy_share",
+    "curve_max_trade_share",
+    "curve_top_trader_share",
+    "curve_top_trader_share_max",
+    "minutes_since_graduation",
+)
+_FLOW_CACHE: tuple | None = None
+
+
+def _flow_arrays(trades: TokenTrades) -> tuple:
+    """(epoch seconds, buy_q, sell_q, max_q, top_share, is_curve,
+    first postgrad index or -1), cached per token like _bar_arrays."""
+    global _FLOW_CACHE
+    key = (id(trades), len(trades), trades[0]["trade_time"], trades[-1]["trade_time"]) if trades else None
+    if _FLOW_CACHE is None or _FLOW_CACHE[0] != key:
+
+        def _col(name: str) -> np.ndarray:
+            return np.array([np.nan if _missing(r.get(name)) else float(r[name]) for r in trades], dtype=float)
+
+        phase = [r.get("phase") for r in trades]
+        postgrad = [i for i, p in enumerate(phase) if p == "postgrad"]
+        _FLOW_CACHE = (
+            key,
+            np.array([_parse(r["trade_time"]).timestamp() for r in trades], dtype=float),
+            _col("volume_buy_q"),
+            _col("volume_sell_q"),
+            _col("max_trade_q"),
+            _col("top_trader_share"),
+            np.array([p == "curve" for p in phase], dtype=bool),
+            postgrad[0] if postgrad else -1,
+        )
+    return _FLOW_CACHE[1:]
+
+
+def _flow_stats(buy: np.ndarray, sell: np.ndarray, mx: np.ndarray, top: np.ndarray) -> dict[str, float | None]:
+    """Buy share of quote volume, largest trade / total volume, and the
+    volume-weighted mean (and max) of per-bar top-trader share. None when
+    the bars carry no flow data or no volume -- never 0, so LightGBM sees
+    'unknown' rather than 'no buying'."""
+    has = ~(np.isnan(buy) & np.isnan(sell))
+    vol = np.nan_to_num(buy) + np.nan_to_num(sell)
+    total = float(vol[has].sum()) if has.any() else 0.0
+    out: dict[str, float | None] = {"buy_share": None, "max_share": None, "top_vw": None, "top_max": None}
+    if total <= 0:
+        return out
+    out["buy_share"] = float(np.nan_to_num(buy[has]).sum()) / total
+    if (~np.isnan(mx)).any():
+        out["max_share"] = min(1.0, float(np.nanmax(mx)) / total)
+    has_top = ~np.isnan(top) & has & (vol > 0)
+    if has_top.any():
+        out["top_vw"] = float((top[has_top] * vol[has_top]).sum() / vol[has_top].sum())
+        out["top_max"] = float(top[has_top].max())
+    return out
+
+
+def flow_features(trades: TokenTrades, t: datetime, *, window: timedelta = FLOW_WINDOW) -> dict[str, Any]:
+    """Point-in-time flow features at T: the trailing `window` and the whole
+    curve phase so far (bars with trade_time <= T only), plus minutes since
+    graduation (None until the first postgrad bar has closed by T)."""
+    if not trades:
+        return {k: None for k in FLOW_FEATURE_KEYS}
+    ts, buy, sell, mx, top, is_curve, first_pg = _flow_arrays(trades)
+    right = _count_at_or_before(trades, t)
+    left = _count_at_or_before(trades, t - window)
+    w = slice(left, right)
+    recent = _flow_stats(buy[w], sell[w], mx[w], top[w])
+    c = np.zeros(len(trades), dtype=bool)
+    c[:right] = is_curve[:right]
+    curve = _flow_stats(buy[c], sell[c], mx[c], top[c])
+    since_grad = None
+    if first_pg >= 0 and ts[first_pg] <= t.timestamp():
+        # trade_time = bar_start + 1 min; the pool exists from bar_start
+        since_grad = (t.timestamp() - (ts[first_pg] - 60)) / 60
+    return {
+        "flow_buy_share_15m": recent["buy_share"],
+        "flow_max_trade_share_15m": recent["max_share"],
+        "flow_top_trader_share_15m": recent["top_vw"],
+        "curve_buy_share": curve["buy_share"],
+        "curve_max_trade_share": curve["max_share"],
+        "curve_top_trader_share": curve["top_vw"],
+        "curve_top_trader_share_max": curve["top_max"],
+        "minutes_since_graduation": since_grad,
+    }
+
+
 def _censored(t: datetime, hold_minutes: int, observed_until: Any) -> bool:
     return observed_until is not None and t + timedelta(minutes=hold_minutes) > _parse(observed_until)
 
@@ -505,6 +602,7 @@ def build_entry_row(
         **_barrier_labels(trades, t, price_t, observed_until),
         **features,
         **_v2_features(trades, t, launch_time),
+        **flow_features(trades, t),
     }
 
 

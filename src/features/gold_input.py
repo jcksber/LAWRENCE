@@ -33,6 +33,11 @@ GOLD_INPUT_COLUMNS = [
     "amount_usd",
     "n_trades",
     "n_buys",
+    # 2026-10-16: per-bar flow stats (NULL where the bar source lacks them)
+    "volume_buy_q",
+    "volume_sell_q",
+    "max_trade_q",
+    "top_trader_share",
     "phase",
     "chain_family",
     "network",
@@ -76,6 +81,10 @@ def gold_input(price_df: DataFrame, curve_data_end: datetime) -> DataFrame:
             F.col("volume_usd").alias("amount_usd"),
             "n_trades",
             "n_buys",
+            "volume_buy_q",
+            "volume_sell_q",
+            "max_trade_q",
+            "top_trader_share",
             "phase",
             F.lit("solana").alias("chain_family"),  # every curve venue is Solana today
             F.lit(None).cast("string").alias("network"),

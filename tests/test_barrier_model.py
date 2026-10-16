@@ -36,3 +36,12 @@ def test_classifier_learns_a_simple_signal():
     X, y, _ = prepare_barrier_features(_frame(), 60)
     p = predict_up_probability(train_barrier_model(X, y, n_estimators=50), X)
     assert p[y == 1].mean() > p[y == 0].mean() + 0.3
+
+
+def test_flow_list_does_not_change_frozen_features():
+    from models.barrier_model import FLOW_FEATURE_COLUMNS, FLOW_MODEL_FEATURE_COLUMNS
+    from features.gold_features import FLOW_FEATURE_KEYS
+
+    assert FLOW_MODEL_FEATURE_COLUMNS[: len(FEATURE_COLUMNS)] == FEATURE_COLUMNS
+    assert not set(FLOW_FEATURE_COLUMNS) & set(FEATURE_COLUMNS)
+    assert tuple(FLOW_FEATURE_COLUMNS) == FLOW_FEATURE_KEYS

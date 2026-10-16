@@ -55,7 +55,7 @@ import features.gold_input  # noqa: E402
 
 importlib.reload(features.gold_features)
 importlib.reload(features.gold_input)
-from features.gold_features import BARRIER_HORIZONS_MIN, LABEL_HOLD_MINUTES, build_entry_row, sample_assessment_times  # noqa: E402
+from features.gold_features import BARRIER_HORIZONS_MIN, FLOW_FEATURE_KEYS, LABEL_HOLD_MINUTES, build_entry_row, sample_assessment_times  # noqa: E402
 from features.gold_input import GOLD_INPUT_COLUMNS, gold_input  # noqa: E402
 
 # COMMAND ----------
@@ -108,6 +108,9 @@ _ENTRY_SCHEMA = StructType([
     StructField("minutes_since_launch", DoubleType()),
     StructField("is_postgrad_at_t", BooleanType()),
 ]
+# 2026-10-16: on-chain flow features + minutes since graduation (gold_features
+# FLOW_FEATURE_KEYS); NULL where the bars carry no flow stats.
++ [StructField(k, DoubleType()) for k in FLOW_FEATURE_KEYS]
 # 2026-10-01: one label column per horizon in LABEL_HOLD_MINUTES (5/15/60),
 # NULL where that horizon is censored. `y_entry` itself = HOLD_MINUTES (15).
 + [StructField(f"y_entry_{h}m", DoubleType()) for h in LABEL_HOLD_MINUTES]

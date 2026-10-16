@@ -2476,3 +2476,43 @@ Running record of the calls made along the way, so the "why" doesn't get lost.
   with/without walk-forward comparison shows out-of-sample lift. Order:
   on-chain flow features first (free, already in Silver from 09-13),
   social after, and both only after the pre-registered test result.
+
+## 2026-10-16 — Flow features drafted (not run) + social data source research
+
+**Flow features (code only; run after the pre-registered test).** `gold_features.flow_features` adds 8 point-in-time columns to entry_candidates: `flow_buy_share_15m`, `flow_max_trade_share_15m`, `flow_top_trader_share_15m` (volume-weighted mean of per-bar top-trader share), the curve-life versions `curve_buy_share`, `curve_max_trade_share`, `curve_top_trader_share`, `curve_top_trader_share_max`, and `minutes_since_graduation` (None until the first postgrad bar has closed). Missing stats → None, never 0. `barrier_model.FEATURE_COLUMNS` is left FROZEN; the new list is `FLOW_FEATURE_COLUMNS` / `FLOW_MODEL_FEATURE_COLUMNS`, and `prepare_barrier_features` takes `feature_columns`.
+- Caveat 1: postgrad bars carry no flow stats (00f doesn't pull them), so post-grad rows -- Model A's whole training set -- only get the curve-life summary + minutes_since_graduation. The 15m flow columns are mostly NULL there. Adding buy/sell/top-trader stats to 00f's postgrad bars is a separate Dune cost decision.
+- Caveat 2: `top_trader_share` exists only from 2026-09-13 (Dune curve bars); Silver trade bars before that have buy/sell/max but not it. NULL therefore partly encodes "older data". Compare flow vs frozen features on T ≥ 09-13 rows only.
+- Needs a full 02 rerun (Gold schema change) -- after the pre-registered result is recorded.
+
+**Social sources (option C), prices checked 2026-10-16, volume estimates unmeasured.**
+- X API is pay-per-use since Feb 2026 (no free tier): $0.005/post read, counts endpoints $0.005 (recent) / $0.01 (all-archive) per request, 3M reads/month cap. All Counts gives per-minute mention counts for mint/cashtag queries -- the cleanest point-in-time signal. Backfill est. ~$2k for 70k graduated tokens (~3 requests each; bucket-per-request count unverified).
+- Third-party scrapers (TwitterAPI.io $0.15/1k tweets, SocialData ~$0.20/1k, Apify $0.25-0.40/1k) give authors/followers/engagement with historical search. ToS risk. Backfill est. $3-9k; live ~$0.8-1.6k/month -- unmeasured, sample 500 tokens first.
+- LunarCrush ($90-900/mo) and Santiment ($249/mo) target established coins; coverage of minutes-old mints unverified/unlikely.
+- Free: pump.fun replies (unofficial API, timestamped, covers every pump.fun token), DexScreener socials/boosts (live snapshot only), Telegram call channels via Telethon (history from when joined; ban risk).
+- Point-in-time: engagement/follower counts are as of scrape, not T; deleted posts vanish (biases rugs to look cleaner). Use counts + unique authors at T; treat engagement as lagged.
+- Proposed order: (1) pump.fun replies backfill (free), (2) X All Counts on a 500-token sample to measure volume and cost, (3) decide on paid backfill only if (1)/(2) show out-of-sample lift.
+- 2026-10-16: pump.fun replies backfill drafted -- `src/ingestion/pumpfun_replies.py` (+ 8 tests) and notebook 00i → `lawrence.bronze.pumpfun_replies`, resumable per mint. Graduated pump.fun tokens first, then a 50k hash sample of curve-only tokens. The API is unofficial; the notebook probes one token before bulk. pump.fun is blocked from both the Claude workspace and Jack's local VM, so the format is unverified until the Databricks probe runs.
+
+## 2026-10-16 — Pre-registered out-of-sample test: FAIL
+
+Rule frozen 2026-10-11 (see above): Model A, trained once on T < 2026-10-03, cutoff = train q95 of predicted EV (0.0656), one position per token, 2x / -50% / 6h, tested on T >= 2026-10-03.
+
+| | base (0.5%/side slip) | stress (1%/side) |
+|---|---|---|
+| trades / tokens | 1,144 / 640 | same |
+| mean net per trade | -0.00% (sum -0.02 stakes) | -1.0% (sum -11.5 stakes) |
+| median net | -26% | -27% |
+| hit 2x | 26% | 26% |
+| pump.fun usd | +0.2% (806 trades) | -0.8% |
+| StonkFun usd | -1.9% (148) | -2.9% |
+| StonkFun quote | -1.3% (157) | -2.3% |
+| tokens profitable | 38% | 38% |
+
+Checks: trades >= 300 TRUE; overall net > 0 FALSE; StonkFun usd net > 0 FALSE -> **FAIL**. Days split 4 up / 4 down.
+
+Reading:
+- The in-sample +2.3% (non-overlapping, train_q95) did not hold out of sample; it decayed to break-even. No re-tuning on this window, per the rule.
+- Selection still carries a direction signal: 26% hit 2x first vs a 16% base rate for post-grad pump.fun at 6h, and gross returns are well above the -9.8% unconditional mean. That's not enough to clear fees + slippage. The edge, if any, is smaller than costs.
+- Rough noise: per-trade sd ~0.5 → SE ~1.5% on 1,144 trades, so +2.3% vs 0% isn't strongly distinguishable either way. The rule exists so this doesn't become a reason to keep going.
+- **Not tradeable.** No live or paper capital on Model A as specified.
+- The 10-03..10-10 window is now USED. It can be training/validation data for new work, but any new hypothesis (flow features, social) needs its own pre-registration and a fresh test window of data after 2026-10-10 that nobody has looked at.

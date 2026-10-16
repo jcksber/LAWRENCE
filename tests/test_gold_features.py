@@ -446,3 +446,75 @@ def test_barrier_horizons_share_one_scan_but_resolve_separately():
     assert out["y_up_60m"] == 0.0 and abs(out["r_up_60m"] - 0.1) < 1e-12 and out["t_up_60m"] == 60
     assert out["y_up_360m"] == 1.0 and out["t_up_360m"] == 120
     assert out["y_up_1440m"] == 1.0
+
+
+# --- 2026-10-16: flow features -------------------------------------------
+
+
+def _flowbar(minutes_offset, buy=None, sell=None, mx=None, top=None, phase="curve"):
+    b = _hlbar(minutes_offset, 1.0, phase=phase)
+    b.update({"volume_buy_q": buy, "volume_sell_q": sell, "max_trade_q": mx, "top_trader_share": top})
+    return b
+
+
+def test_flow_window_shares():
+    from features.gold_features import flow_features
+
+    bars = [_flowbar(0, 3.0, 1.0, 2.0, 0.5), _flowbar(1, 1.0, 3.0, 1.0, 0.25)]
+    f = flow_features(bars, T0 + timedelta(minutes=1))
+    assert f["flow_buy_share_15m"] == 0.5
+    assert f["flow_max_trade_share_15m"] == 2.0 / 8.0
+    assert abs(f["flow_top_trader_share_15m"] - (0.5 * 4 + 0.25 * 4) / 8) < 1e-12
+    assert f["curve_top_trader_share_max"] == 0.5
+
+
+def test_flow_is_point_in_time():
+    from features.gold_features import flow_features
+
+    bars = [_flowbar(0, 1.0, 1.0, 1.0, 0.5), _flowbar(5, 100.0, 0.0, 100.0, 1.0)]
+    f = flow_features(bars, T0 + timedelta(minutes=2))  # minute-5 bar not closed yet
+    assert f["flow_buy_share_15m"] == 0.5 and f["curve_top_trader_share_max"] == 0.5
+
+
+def test_flow_window_excludes_old_bars_but_curve_life_keeps_them():
+    from features.gold_features import flow_features
+
+    bars = [_flowbar(0, 9.0, 1.0, 9.0, 0.9), _flowbar(30, 1.0, 1.0, 1.0, 0.1)]
+    f = flow_features(bars, T0 + timedelta(minutes=30))
+    assert f["flow_buy_share_15m"] == 0.5
+    assert f["curve_buy_share"] == 10.0 / 12.0
+
+
+def test_flow_missing_stats_are_none_not_zero():
+    from features.gold_features import flow_features
+
+    bars = [_flowbar(0), _flowbar(1, 0.0, 0.0)]  # no data, then zero volume
+    f = flow_features(bars, T0 + timedelta(minutes=1))
+    assert f["flow_buy_share_15m"] is None and f["curve_top_trader_share"] is None
+
+
+def test_flow_top_trader_absent_on_old_trade_bars():
+    from features.gold_features import flow_features
+
+    bars = [_flowbar(0, 2.0, 2.0, 1.0, None)]  # Silver trade bar: no top_trader_share
+    f = flow_features(bars, T0)
+    assert f["flow_buy_share_15m"] == 0.5 and f["flow_top_trader_share_15m"] is None
+
+
+def test_curve_flow_ignores_postgrad_bars_and_grad_minutes():
+    from features.gold_features import flow_features
+
+    bars = [_flowbar(0, 1.0, 1.0, 1.0, 0.5), _flowbar(10, phase="postgrad"), _flowbar(20, phase="postgrad")]
+    before = flow_features(bars, T0 + timedelta(minutes=5))
+    assert before["minutes_since_graduation"] is None
+    after = flow_features(bars, T0 + timedelta(minutes=30))
+    assert after["minutes_since_graduation"] == 21.0  # pool from bar_start = minute 9
+    assert after["curve_buy_share"] == 0.5 and after["flow_buy_share_15m"] is None
+
+
+def test_entry_row_carries_flow_features():
+    from features.gold_features import FLOW_FEATURE_KEYS
+
+    bars = [_flowbar(0, 1.0, 1.0, 1.0, 0.5), _flowbar(15, 1.0, 1.0, 1.0, 0.5), _flowbar(30)]
+    row = build_entry_row("tok", T0 + timedelta(minutes=1), bars)
+    assert row is not None and all(k in row for k in FLOW_FEATURE_KEYS)
