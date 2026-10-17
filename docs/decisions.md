@@ -2530,3 +2530,38 @@ Code: `src/ingestion/pumpfun_social.py` (+ 8 tests) replaces `pumpfun_replies.py
   - Launch socials: X 40.5%, Telegram 12.5%, website 30.5%.
   - Callout timing: 45% before graduation and 80% within 6h of graduation; 3,115 distinct callers across 4,371 callouts (mostly one-off).
   - Timely enough to matter for the 6h post-grad decision. Truncation (and its absence) is post-hoc and is never a feature.
+
+## 2026-10-17 — Scoring contract v1 for shadow mode (request R1 from the product chat)
+- `contracts/v1/CONTRACT.md` + `src/serving/contract_v1.py` (pure pandas; 7 equivalence tests against Gold: features, grid, selection, outcome, costs) + `notebooks/04c_export_contract_v1.py` (trains the frozen Model A spec on all resolved post-grad rows, saves booster + sha256 manifest + PSI baselines).
+- v1 = the spec that failed on 2026-10-16. It ships for plumbing, skew measurement and a second independent pre-registered test, not because it's expected to pass.
+- Authoritative shadow labels = the pipeline re-run over the shadow window, not live-resolved outcomes.
+- Proposed pre-registration (CONTRACT.md §11): 21-day fixed window, extension to 35 days if < 300 trades, PASS = ≥300 trades AND net > 0 at base AND at stress costs. Pending Jack's approval at the freeze commit.
+
+## 2026-10-17 — R2 answers; Silver look-ahead found; v1 selection fix
+- **Contract fix:** v1 candidates must satisfy `as_of + 6h ≤ first postgrad bar + 24h`. Training only has 24h of post-graduation bars and censors later rows; the first contract draft would have scored rows the model never saw. Added to `select_row` and tested.
+- **Look-ahead in Silver** (training side, minor but real), found while specifying live bars:
+  1. The outlier-band median uses the token's full history.
+  2. The canonical post-graduation pool is the busiest over 24h.
+  3. `price_unit` uses full-history USD coverage (non-major quotes only).
+  - Live uses point-in-time versions (`serving/bars_v1.py` with `band_mode="live"`, the migration pool, and `price_unit_live`).
+  - The parity fixture (00j) measures the gap. If it isn't negligible, fix Silver to point-in-time for v2 (it would change training data, so not in v1).
+- `src/serving/bars_v1.py` is the reference builder from raw swaps (4 synthetic tests); `tests/test_parity_fixture.py` runs once 00j's fixture is committed.
+- 2026-10-17 (R3): Gold keeps a post-grad row past grad + 18h only when its 6h barrier resolved before the 24h data edge. That's **selection on the outcome**. The failed 10-03 test's train and test sets both included these rows. 04c now drops them, so v1's training universe = live selection (CONTRACT §4 rule 7); its cutoff is computed after the fix. Re-checking the failed test's result without them is low-value (the rule was frozen as run), but note it as a known flaw of that test.
+- 2026-10-17, 00i metadata misses (6,191 coins, 18%, 0 recovered on retry): a 300-coin sample shows ~60% point at non-IPFS hosts. `metadata.j7tracker.io` (172) is a third-party launch tool; the rest are throwaway domains, now 404. Most of the others are unpinned or gateway-"blocked" IPFS content. So missing metadata is post-hoc and correlated with coin fate: `has_launch_metadata` is NEVER a feature. The URI **host**, though, is on-chain at creation, so it's launch-time-safe and a candidate bundler/launch-tool fingerprint. Added `metadata_uri`/`metadata_host` to coin rows and a backfill cell → `bronze.pumpfun_coin_uris`.
+- 2026-10-17 (R4): **v1 = the Model A *spec*, not the Model A *model*.**
+  - **Same as Model A:** algorithm and params (LGBMRegressor, seed 17, 300 trees, lr 0.05), features (`barrier_model.FEATURE_COLUMNS`), target (`r_up_360m`), cutoff rule (train p95), entry/exit and costs.
+  - **Different:** the booster is RETRAINED on (a) all data through 2026-10-10, not < 10-03, and (b) only rows satisfying CONTRACT §4 rule 7 (≤ 18h after graduation), which removes the outcome-selected rows past 18h.
+  - So v1's shadow test is a test of "the Model A spec trained on a corrected universe", not a re-run of the model that failed.
+- 2026-10-17 (R4): startup tolerance set to 1e-9, not 1e-12.
+  - Prediction = a fixed-order sum of 300 leaf values in IEEE doubles, so x86 and arm64 should agree exactly given identical inputs and the same lightgbm version, but that's unverified across builds.
+  - Any real fault (wrong file, version or frame) shows up at ≫1e-6, and a 1e-9 score difference can't flip a decision except within 1e-9 of the cutoff.
+  - Reference platform: x86-64 Linux.
+- 2026-10-17, metadata URI hosts (35,102 graduated pump.fun coins, `bronze.pumpfun_coin_uris`):
+  - **Standard path:** ipfs.io 76% (94% still resolve).
+  - **Third-party, ~24%:** launch/deployer tools j7tracker 3,459 (service dead, 0% resolve), uxento 1,256, rapidlaunch 509, vortexdeployer 187, usepaid 243, agencypad 160, launchblitz 107; Pinata gateways; throwaway domains.
+  - **Resolution:** depends on the host/tool, not the coin. Still post-hoc, so never a feature.
+  - **Planned features (social pass):**
+    - `metadata_host_group`: ipfs.io / launch-tool hosts with ≥100 coins in the TRAINING period / other_pinata / other_custom. Groups frozen from training-period counts; unseen hosts → other_custom.
+    - `is_launch_tool`.
+  - **Coverage gap:** graduated coins only. Curve-only coins need URIs from Dune (on-chain metadata) before this can be an entry feature before graduation.
+  - **Open:** 35,102 distinct mints vs the expected ~34.9k from the pulls. Check for duplicates or format variants before building features.

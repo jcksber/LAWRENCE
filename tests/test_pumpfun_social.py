@@ -7,6 +7,7 @@ from ingestion.pumpfun_social import (
     fetch_coin_social,
     get_json,
     ipfs_url,
+    metadata_host,
     to_callout_row,
     to_coin_row,
 )
@@ -105,3 +106,11 @@ def test_fetch_coin_social_missing_coin_and_gateway_fallback():
     assert out["meta"] == {"website": "w"} and out["truncated"] is False
     gone = fetch_coin_social("Z", _Session({}), sleep=lambda s: None)
     assert gone["coin"] is None and gone["callouts"] == []
+
+
+def test_metadata_host():
+    assert metadata_host("ipfs://Qm1") == "ipfs" and metadata_host("Qm1") == "ipfs"
+    assert metadata_host("https://metadata.J7tracker.io/metadata/x.json") == "metadata.j7tracker.io"
+    assert metadata_host("https://ipfs.io/ipfs/Qm") == "ipfs.io" and metadata_host(None) is None
+    r = to_coin_row({"mint": "M", "metadata_uri": "https://md.example.uk/a.json"}, None, "M", NOW)
+    assert r["metadata_host"] == "md.example.uk" and r["metadata_uri"].endswith("a.json")

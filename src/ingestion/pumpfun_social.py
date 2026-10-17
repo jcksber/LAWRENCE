@@ -87,6 +87,21 @@ def get_json(
     raise SocialUnavailable(-1, f"gave up after {retries} retries: {url}")
 
 
+def metadata_host(metadata_uri: str | None) -> str | None:
+    """Host the launch metadata URI points at -- written on-chain at creation,
+    so it's known at launch (a launch-tool / throwaway-domain fingerprint).
+    'ipfs' for ipfs:// URIs and bare CIDs; lower-cased netloc otherwise.
+    Whether the URI still RESOLVES today is post-hoc and never a feature."""
+    if not metadata_uri:
+        return None
+    u = metadata_uri.strip()
+    if u.startswith("ipfs://") or not u.startswith("http"):
+        return "ipfs"
+    from urllib.parse import urlparse
+
+    return urlparse(u).netloc.lower() or None
+
+
 def ipfs_url(metadata_uri: str | None) -> list[str]:
     """Gateway URLs to try for a metadata_uri (ipfs://CID, a gateway URL, or
     a bare CID). Non-IPFS http(s) URIs are returned as-is."""
@@ -131,6 +146,9 @@ def to_coin_row(coin: dict, meta: dict | None, mint: str, ingested_at: datetime)
         "launch_telegram": meta.get("telegram") or None,
         "launch_website": meta.get("website") or None,
         "has_launch_metadata": bool(meta),
+        # 2026-10-17: the on-chain URI and its host (launch-time, see metadata_host)
+        "metadata_uri": coin.get("metadata_uri"),
+        "metadata_host": metadata_host(coin.get("metadata_uri")),
         # as of the pull -- NOT point-in-time
         "current_twitter": coin.get("twitter") or None,
         "complete": coin.get("complete"),

@@ -45,3 +45,9 @@ def test_flow_list_does_not_change_frozen_features():
     assert FLOW_MODEL_FEATURE_COLUMNS[: len(FEATURE_COLUMNS)] == FEATURE_COLUMNS
     assert not set(FLOW_FEATURE_COLUMNS) & set(FEATURE_COLUMNS)
     assert tuple(FLOW_FEATURE_COLUMNS) == FLOW_FEATURE_KEYS
+
+
+def test_contract_v1_features_are_frozen_list():
+    from serving.contract_v1 import FEATURE_COLUMNS as CONTRACT_COLUMNS
+
+    assert CONTRACT_COLUMNS == FEATURE_COLUMNS

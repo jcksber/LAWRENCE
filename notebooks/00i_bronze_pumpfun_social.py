@@ -118,7 +118,9 @@ _COINS_SCHEMA = StructType(
     + [StructField("created_at", TimestampType()), StructField("program", StringType()),
        StructField("description_len", LongType())]
     + [StructField(c, StringType()) for c in ("launch_twitter", "launch_telegram", "launch_website")]
-    + [StructField("has_launch_metadata", BooleanType()), StructField("current_twitter", StringType())]
+    + [StructField("has_launch_metadata", BooleanType()),
+       StructField("metadata_uri", StringType()), StructField("metadata_host", StringType()),
+       StructField("current_twitter", StringType())]
     + [StructField(c, BooleanType()) for c in ("complete", "nsfw", "is_banned", "hidden", "is_backfill")]
     + [StructField("source", StringType()), StructField("ingested_at", TimestampType())]
 )
@@ -192,7 +194,7 @@ with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             ))
         if coin_rows:
             spark.createDataFrame(coin_rows, schema=_COINS_SCHEMA).write.format("delta") \
-                .mode("append").saveAsTable(COINS_TABLE)
+                .mode("append").option("mergeSchema", "true").saveAsTable(COINS_TABLE)
         if callout_rows:
             spark.createDataFrame(callout_rows, schema=_CALLOUTS_SCHEMA).write.format("delta") \
                 .mode("append").saveAsTable(CALLOUTS_TABLE)
@@ -255,7 +257,8 @@ with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             for k in ("complete", "nsfw", "is_banned", "hidden", "is_backfill"):
                 r[k] = _bool(r[k])
             rows.append(r)
-        spark.createDataFrame(rows, schema=_COINS_SCHEMA).write.format("delta").mode("append").saveAsTable(COINS_TABLE)
+        spark.createDataFrame(rows, schema=_COINS_SCHEMA).write.format("delta").mode("append") \
+            .option("mergeSchema", "true").saveAsTable(COINS_TABLE)
         spark.createDataFrame(
             [Row(mint=m, status="success", n_callouts=retry_status[m].n_callouts,
                  callouts_truncated=retry_status[m].callouts_truncated, has_launch_metadata=True,
@@ -265,6 +268,55 @@ with ThreadPoolExecutor(max_workers=WORKERS) as pool:
         recovered += len(res)
         print(f"[{b + BATCH:,}/{len(retry):,}] recovered so far: {recovered:,}", flush=True)
 print(f"recovered {recovered:,} of {len(retry):,}")
+
+# COMMAND ----------
+
+# METADATA URI BACKFILL (2026-10-17): the first pull didn't store the on-chain
+# metadata URI. Its HOST is a launch-time feature (third-party launch tool /
+# throwaway domain vs pump.fun IPFS). Re-fetches only /coins-v2/{mint} (1
+# request per coin) into a small side table; resumable. ~45 min for ~35k.
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
+
+import requests  # noqa: E402
+from ingestion.pumpfun_social import get_json, metadata_host  # noqa: E402
+
+URIS_TABLE = "lawrence.bronze.pumpfun_coin_uris"
+_uri_schema = StructType([StructField("mint", StringType()), StructField("metadata_uri", StringType()),
+                          StructField("metadata_host", StringType()), StructField("found", BooleanType()),
+                          StructField("ingested_at", TimestampType())])
+_have = spark.table(COINS_TABLE).select("mint").distinct()
+if spark.catalog.tableExists(URIS_TABLE):
+    _have = _have.join(spark.table(URIS_TABLE).select("mint"), "mint", "left_anti")
+uri_todo = [r.mint for r in _have.collect()]
+print(f"{len(uri_todo):,} coins need their metadata URI")
+_sess = requests.Session()
+
+
+def _uri_one(mint):
+    try:
+        c = get_json(_sess, f"{BASE_URL}/coins-v2/{mint}")
+    except Exception:
+        return None  # not logged -> retried on the next run
+    u = (c or {}).get("metadata_uri")
+    return {"mint": mint, "metadata_uri": u, "metadata_host": metadata_host(u),
+            "found": c is not None, "ingested_at": datetime.now(timezone.utc)}
+
+
+with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+    for b in range(0, len(uri_todo), 500):
+        rows = [x for x in pool.map(_uri_one, uri_todo[b : b + 500]) if x]
+        if rows:
+            spark.createDataFrame(rows, schema=_uri_schema).write.format("delta").mode("append").saveAsTable(URIS_TABLE)
+        print(f"[{b + 500:,}/{len(uri_todo):,}] +{len(rows)}", flush=True)
+
+display(spark.sql(f"""
+    SELECT u.metadata_host, COUNT(*) AS coins,
+           ROUND(AVG(CAST(c.has_launch_metadata AS INT)), 3) AS metadata_resolved_share
+    FROM {URIS_TABLE} u
+    JOIN (SELECT mint, MAX(CAST(has_launch_metadata AS INT)) = 1 AS has_launch_metadata
+          FROM {COINS_TABLE} GROUP BY mint) c USING (mint)
+    GROUP BY 1 ORDER BY coins DESC LIMIT 25
+"""))
 
 # COMMAND ----------
 
