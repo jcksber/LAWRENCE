@@ -32,6 +32,7 @@ from serving import bars_v1, contract_v1  # noqa: E402
 
 spark.conf.set("spark.sql.session.timeZone", "UTC")
 OUT = "/Volumes/lawrence/gold/contracts/v1/fixtures/parity_2026-10-05"
+spark.sql("CREATE VOLUME IF NOT EXISTS lawrence.gold.contracts")  # 04c also creates it; either may run first
 dbutils.fs.mkdirs(OUT)
 LAUNCH_FROM = datetime(2026, 10, 5, 0, tzinfo=timezone.utc)
 LAUNCH_TO = datetime(2026, 10, 5, 12, tzinfo=timezone.utc)
@@ -125,6 +126,22 @@ WHERE blockchain = 'solana'
   AND symbol IN ('SOL', 'USDC', 'USDT')
 """))  # filter on symbol: Solana contract_address encoding in prices.usd varies
 quote_prices["minute"] = pd.to_datetime(quote_prices["minute"].astype(str).str.replace(" UTC", ""), utc=True)
+
+
+def _b58_hex(addr: str) -> str:
+    """Base58 Solana address -> Dune's 0x-hex varbinary form (32 bytes)."""
+    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    n = 0
+    for ch in addr:
+        n = n * 58 + alphabet.index(ch)
+    return "0x" + n.to_bytes(32, "big").hex()
+
+
+# 2026-10-17: symbol 'USDC' matched TWO tokens on Solana; keep only the
+# exact mints (SOL=WSOL, USDC=EPjF..., USDT=Es9v...) by their hex form.
+_hex = {_b58_hex(a): sym for sym, a in QUOTES.items()}
+quote_prices = quote_prices[quote_prices["contract_address"].str.lower().isin(_hex)].copy()
+quote_prices["mint"] = quote_prices["contract_address"].str.lower().map({h: QUOTES[s] for h, s in _hex.items()})
 print(quote_prices.groupby("symbol").size())
 print(f"{len(swaps):,} swaps; complete window: {COMPLETE}")
 
@@ -186,13 +203,22 @@ print(json.dumps(report["summary"], indent=2, default=str))
 
 # COMMAND ----------
 
+def _plain(df):
+    """Spark Connect's toPandas() puts PlanMetrics objects in df.attrs, which
+    pandas tries to JSON-encode into parquet metadata -> TypeError. Drop them."""
+    df = df.copy()
+    df.attrs = {}
+    return df
+
+
+swaps, silver, feats, ctx, quote_prices = map(_plain, (swaps, silver, feats, ctx, quote_prices))
 if COMPLETE:
     swaps.to_parquet(f"{OUT}/swaps.parquet", index=False)
     silver.to_parquet(f"{OUT}/silver_bars.parquet", index=False)
     feats.to_parquet(f"{OUT}/expected_features.parquet", index=False)
     quote_prices.to_parquet(f"{OUT}/quote_prices_usd.parquet", index=False)
     for mode, parts_ in ref_bars.items():  # R3: expected build_bars output in both modes
-        pd.concat(parts_, ignore_index=True).to_parquet(f"{OUT}/expected_bars_{mode}.parquet", index=False)
+        _plain(pd.concat(parts_, ignore_index=True)).to_parquet(f"{OUT}/expected_bars_{mode}.parquet", index=False)
     ctx.to_json(f"{OUT}/token_context.json", orient="records", date_format="iso", indent=2)
     with open(f"{OUT}/parity_report.json", "w") as f:
         json.dump(report, f, indent=2, default=str)

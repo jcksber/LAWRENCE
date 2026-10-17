@@ -110,6 +110,7 @@ startup_df = startup.copy()
 for c in CATEGORICAL_FEATURE_COLUMNS:
     startup_df[c] = startup_df[c].astype(object)
 startup_df["expected_prediction"] = booster.predict(startup)
+startup_df.attrs = {}  # Spark Connect PlanMetrics in attrs break to_parquet (00j, 2026-10-17)
 startup_df.to_parquet(f"{OUT}/startup_sample.parquet", index=False)
 
 # expected trades/day: frozen rule (EV >= cutoff, one position per token,
