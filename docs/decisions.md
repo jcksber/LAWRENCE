@@ -2524,3 +2524,9 @@ The 00i probe returned `404 Cannot GET /replies/{mint}`, meaning the route itsel
 - `GET /callout/coin/{mint}?limit=100`: user "callouts" with `createdAt` and market cap at call. Engagement counts are as of the pull. **Max 100, ranked by `maxMultiplier` (post-hoc performance)**, so a coin returning 100 is truncated toward winners, which is look-ahead bias. Flagged `callouts_truncated`; those coins get no callout features. `maxMultiplier` is stored as `posthoc_max_multiplier` and is never a feature.
 
 Code: `src/ingestion/pumpfun_social.py` (+ 8 tests) replaces `pumpfun_replies.py`. Notebook `00i_bronze_pumpfun_social.py` writes `bronze.pumpfun_coins`, `bronze.pumpfun_callouts` and `_pumpfun_social_progress`. IPFS via pump.fun's Pinata gateway, then ipfs.io, with 2 retries each. Expectation: weak signal (most coins likely have zero callouts); the metadata features are cheap and clean.
+- 2026-10-17, 00i first 200 graduated pump.fun coins: all fetched, 3.4 mints/s.
+  - Launch metadata loaded for 82%; the misses are IPFS gateway failures, so a retry cell was added.
+  - 70.5% of coins have ≥1 callout (median 7, p90 88), and 8.5% are truncated at 100.
+  - Launch socials: X 40.5%, Telegram 12.5%, website 30.5%.
+  - Callout timing: 45% before graduation and 80% within 6h of graduation; 3,115 distinct callers across 4,371 callouts (mostly one-off).
+  - Timely enough to matter for the 6h post-grad decision. Truncation (and its absence) is post-hoc and is never a feature.

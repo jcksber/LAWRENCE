@@ -216,6 +216,58 @@ print(f"\nDone this run: {n_coins:,} coins, {n_callouts:,} callouts.")
 
 # COMMAND ----------
 
+# METADATA RETRY (run after the main pull): coins whose launch IPFS metadata
+# failed to load -- a gateway failure, not "no metadata". Re-fetches only the
+# coin + IPFS JSON and appends a fresh coin row + progress row; downstream
+# keeps each mint's latest row (prefer has_launch_metadata). Callouts aren't
+# re-pulled. Re-run until `recovered` stops rising.
+from ingestion.pumpfun_social import fetch_launch_metadata, get_json  # noqa: E402
+from pyspark.sql.window import Window  # noqa: E402
+
+latest = (
+    spark.table(PROGRESS_TABLE)
+    .withColumn("_rn", F.row_number().over(Window.partitionBy("mint").orderBy(F.desc("completed_at"))))
+    .filter("_rn = 1 AND status = 'success' AND NOT has_launch_metadata")
+)
+retry = [r.mint for r in latest.select("mint").collect()]
+retry_status = {r.mint: r for r in latest.select("mint", "n_callouts", "callouts_truncated").collect()}
+print(f"{len(retry):,} coins missing launch metadata")
+
+
+def _meta_one(mint: str):
+    try:
+        coin = get_json(session, f"{BASE_URL}/coins-v2/{mint}")
+        meta = fetch_launch_metadata(session, coin.get("metadata_uri")) if coin else None
+        return mint, coin, meta
+    except Exception:
+        return mint, None, None
+
+
+recovered = 0
+with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+    for b in range(0, len(retry), BATCH):
+        res = [x for x in pool.map(_meta_one, retry[b : b + BATCH]) if x[1] is not None and x[2]]
+        if not res:
+            continue
+        rows = []
+        for mint, coin, meta in res:
+            r = to_coin_row(coin, meta, mint, datetime.now(timezone.utc))
+            for k in ("complete", "nsfw", "is_banned", "hidden", "is_backfill"):
+                r[k] = _bool(r[k])
+            rows.append(r)
+        spark.createDataFrame(rows, schema=_COINS_SCHEMA).write.format("delta").mode("append").saveAsTable(COINS_TABLE)
+        spark.createDataFrame(
+            [Row(mint=m, status="success", n_callouts=retry_status[m].n_callouts,
+                 callouts_truncated=retry_status[m].callouts_truncated, has_launch_metadata=True,
+                 error=None, completed_at=datetime.now(timezone.utc)) for m, _, _ in res],
+            schema=_PROGRESS_SCHEMA,
+        ).write.format("delta").mode("append").saveAsTable(PROGRESS_TABLE)
+        recovered += len(res)
+        print(f"[{b + BATCH:,}/{len(retry):,}] recovered so far: {recovered:,}", flush=True)
+print(f"recovered {recovered:,} of {len(retry):,}")
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Checks
 
@@ -229,7 +281,9 @@ display(spark.sql(f"""
            percentile_approx(n_callouts, 0.5) AS median_callouts,
            percentile_approx(n_callouts, 0.9) AS p90_callouts,
            MIN(error) AS example_error
-    FROM {PROGRESS_TABLE} GROUP BY status
+    FROM (SELECT *, row_number() OVER (PARTITION BY mint ORDER BY completed_at DESC) AS _rn
+          FROM {PROGRESS_TABLE}) WHERE _rn = 1
+    GROUP BY status
 """))
 
 # COMMAND ----------
@@ -240,9 +294,12 @@ display(spark.sql(f"""
            ROUND(AVG(CASE WHEN launch_twitter IS NOT NULL THEN 1 ELSE 0 END), 3) AS launch_twitter_share,
            ROUND(AVG(CASE WHEN launch_telegram IS NOT NULL THEN 1 ELSE 0 END), 3) AS launch_telegram_share,
            ROUND(AVG(CASE WHEN launch_website IS NOT NULL THEN 1 ELSE 0 END), 3) AS launch_website_share,
-           ROUND(AVG(CASE WHEN COALESCE(launch_twitter, '') <> COALESCE(current_twitter, '') THEN 1 ELSE 0 END), 3)
-               AS twitter_changed_share
-    FROM {COINS_TABLE}
+           ROUND(AVG(CASE WHEN has_launch_metadata AND COALESCE(launch_twitter, '') <> COALESCE(current_twitter, '')
+                          THEN 1 ELSE 0 END) / AVG(CAST(has_launch_metadata AS INT)), 3)
+               AS twitter_changed_share  -- among coins WITH launch metadata
+    FROM (SELECT *, row_number() OVER (PARTITION BY mint
+                 ORDER BY has_launch_metadata DESC, ingested_at DESC) AS _rn
+          FROM {COINS_TABLE}) WHERE _rn = 1
 """))
 
 # COMMAND ----------
