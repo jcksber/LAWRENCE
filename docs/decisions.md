@@ -2565,3 +2565,8 @@ Code: `src/ingestion/pumpfun_social.py` (+ 8 tests) replaces `pumpfun_replies.py
     - `is_launch_tool`.
   - **Coverage gap:** graduated coins only. Curve-only coins need URIs from Dune (on-chain metadata) before this can be an entry feature before graduation.
   - **Open:** 35,102 distinct mints vs the expected ~34.9k from the pulls. Check for duplicates or format variants before building features.
+- 2026-10-17, parity fixture (00j, 20 tokens, 43k+ swaps):
+  - `serving/bars_v1.build_bars` reproduces Silver for 2,731 of 2,734 bars, with identical closes, identical n_trades and volume within 1e-15. The 3 misses are Silver bars on 10-07, past the fixture's swap window (window edge, not a builder gap); the test now compares only bars inside the swap window.
+  - Live band mode gave identical bars on all 20 tokens.
+  - All 12 pump.fun graduates' canonical (busiest) pool = the earliest PumpSwap pool.
+  - Dune run cost: ~29 credits for the 1st chunk + prices.

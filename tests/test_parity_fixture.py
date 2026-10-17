@@ -27,6 +27,11 @@ def test_reference_bars_match_silver():
     from serving import bars_v1
 
     ctx, swaps, silver, _ = _load()
+    # Silver runs to 10-10; the fixture's swaps stop at 10-07 00:00 (00j
+    # SWAPS_TO). Compare only bars the swaps can explain (2026-10-17: 3 of
+    # 3wqhGxs4's bars were on 10-07 -- a window edge, not a builder gap).
+    swaps_end = pd.to_datetime(swaps["block_time"], utc=True).max().ceil("D")
+    silver = silver[pd.to_datetime(silver["bar_start"], utc=True) < swaps_end]
     for r in ctx.itertuples(index=False):
         sb = silver[silver["token_id"] == r.token_id].sort_values("bar_start").reset_index(drop=True)
         pump = r.launch_venue == "pumpdotfun"
