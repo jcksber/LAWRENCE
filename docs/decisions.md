@@ -2516,3 +2516,11 @@ Reading:
 - Rough noise: per-trade sd ~0.5 → SE ~1.5% on 1,144 trades, so +2.3% vs 0% isn't strongly distinguishable either way. The rule exists so this doesn't become a reason to keep going.
 - **Not tradeable.** No live or paper capital on Model A as specified.
 - The 10-03..10-10 window is now USED. It can be training/validation data for new work, but any new hypothesis (flow features, social) needs its own pre-registration and a fresh test window of data after 2026-10-10 that nobody has looked at.
+
+## 2026-10-17 — pump.fun comments removed; 00i rewritten for metadata + callouts
+
+The 00i probe returned `404 Cannot GET /replies/{mint}`, meaning the route itself is gone, not the token. Checked in a browser against pump.fun's own frontend JS: per-coin comment threads no longer exist, and the coin record has no reply count. Public, unauthenticated replacements on `frontend-api-v3.pump.fun`:
+- `GET /coins-v2/{mint}`: coin record. Its `metadata_uri` (IPFS, immutable) holds the **launch-time** twitter/telegram/website/description, which are point-in-time safe. The record's own `twitter` may be edited later; it's stored as `current_twitter` and isn't a feature.
+- `GET /callout/coin/{mint}?limit=100`: user "callouts" with `createdAt` and market cap at call. Engagement counts are as of the pull. **Max 100, ranked by `maxMultiplier` (post-hoc performance)**, so a coin returning 100 is truncated toward winners, which is look-ahead bias. Flagged `callouts_truncated`; those coins get no callout features. `maxMultiplier` is stored as `posthoc_max_multiplier` and is never a feature.
+
+Code: `src/ingestion/pumpfun_social.py` (+ 8 tests) replaces `pumpfun_replies.py`. Notebook `00i_bronze_pumpfun_social.py` writes `bronze.pumpfun_coins`, `bronze.pumpfun_callouts` and `_pumpfun_social_progress`. IPFS via pump.fun's Pinata gateway, then ipfs.io, with 2 retries each. Expectation: weak signal (most coins likely have zero callouts); the metadata features are cheap and clean.
