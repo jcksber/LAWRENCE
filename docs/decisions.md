@@ -2606,3 +2606,8 @@ Code: `src/ingestion/pumpfun_social.py` (+ 8 tests) replaces `pumpfun_replies.py
   2. The host feature needs the on-chain metadata URI at launch, plus the frozen host→group map.
   3. LaunchLab tokens had NO host in training, so live must also give NaN for LaunchLab even if a URI is available.
 - 2026-10-18: **Runtime spend deferred; testing moves to a pre-registered Dune holdout** (`contracts/v2/PREREG.md`). Window 10-11 → 11-01 (21 days, never pulled), v1 + v2 both frozen beforehand. PASS = 95% lower bound > 0 at base AND mean > 0 at stress (α 0.05 each, Bonferroni for 2 models). Freeze = the commit with v2's artifacts + PREREG + `holdout_eval_2026_10.py` + notebook 06, before any window-4 pull. Live shadow stays the gate before real money.
+
+## 2026-10-18 — v2 + Dune holdout FROZEN at commit e8f36b2 (branch `social`)
+- Frozen: `contracts/v2/` (model sha256 `3e6fdf53…288a`, cutoff 0.0685, 667,514 training rows 09-13 → 10-10 17:38, 15 host groups), `src/models/v2_spec.py`, `src/backtest/holdout_eval_2026_10.py`, `notebooks/06_holdout_eval_2026_10.py`, and `contracts/v2/PREREG.md`.
+- **No data after 2026-10-10 has been pulled.** Holdout window 2026-10-11 → 11-01. Pull after 2026-11-02 per PREREG, then run 06 once.
+- Models under test: v1 (cd6a098) and v2 (e8f36b2); α = 0.05 each.
