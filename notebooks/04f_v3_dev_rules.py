@@ -1,0 +1,170 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # 04f — v3 development, part B: cost- and selectivity-aware RULES (branch `v3`)
+# MAGIC
+# MAGIC Same rows, folds and model as 04d's V2b (v2 features, v1 LightGBM spec,
+# MAGIC 4 weekly walk-forward folds over 2026-09-13 → 10-10, rule 7). The model is
+# MAGIC trained ONCE per fold; only the trade-selection rule changes. Data ≤ 2026-10-10
+# MAGIC only, so the holdout window is untouched.
+# MAGIC
+# MAGIC **Every variant run here is logged in `docs/v3_variant_log.md`**, good or bad.
+# MAGIC The v3 budget is ~10 variants in total across B/C/D, and these 8 rules count.
+
+# COMMAND ----------
+
+# MAGIC %pip install lightgbm==4.7.0
+# MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
+
+import sys
+
+import numpy as np
+import pandas as pd
+from lightgbm import LGBMRegressor
+from pyspark.sql import functions as F
+
+sys.path.append("../src")
+from backtest.shadow_eval_v1 import block_bootstrap_lower_bound, non_overlapping  # noqa: E402
+from models import v2_spec as v2  # noqa: E402
+from serving.contract_v1 import POSTGRAD_OBSERVED_HOURS, round_trip_cost_v1  # noqa: E402
+
+spark.conf.set("spark.sql.session.timeZone", "UTC")
+N = 360
+cols = list(dict.fromkeys(["token_id", "assessment_time", *[c for c in v2.V2_FEATURES if c not in v2.HOST_FEATURES],
+                           "r_up_360m", "t_up_360m"]))
+g = spark.table("lawrence.gold.entry_candidates").filter("is_postgrad_at_t = true AND r_up_360m IS NOT NULL").select(*cols)
+first_pg = (spark.table("lawrence.silver.token_price_1m").filter("phase = 'postgrad'")
+            .groupBy("token_id").agg(F.min("bar_start").alias("first_pg")))
+df = g.join(first_pg, "token_id", "left").join(spark.table("lawrence.gold.social_token_features_v2"), "token_id", "left").toPandas()
+df.attrs = {}
+df["assessment_time"] = pd.to_datetime(df["assessment_time"], utc=True)
+df["first_pg"] = pd.to_datetime(df["first_pg"], utc=True)
+df = df[(df["assessment_time"] >= v2.TRAIN_START) & (df["assessment_time"] < v2.TRAIN_END)
+        & (df["assessment_time"] + pd.Timedelta(minutes=N) <= df["first_pg"] + pd.Timedelta(hours=POSTGRAD_OBSERVED_HOURS))]
+df = df.sort_values("assessment_time").reset_index(drop=True)
+categories = {c: sorted(str(v) for v in df[c].dropna().unique()) for c in v2.CATEGORICAL}
+X_all = v2.to_frame(df, categories)
+venue = df["dex_venue"].astype(str)
+df["cost_base"] = [round_trip_cost_v1(v, True) for v in venue]
+df["cost_stress"] = [round_trip_cost_v1(v, True, 100.0) for v in venue]
+print(f"{len(df):,} rows; cost base by venue:", df.groupby(venue)["cost_base"].first().to_dict())
+
+# COMMAND ----------
+
+S = v2.TRAIN_START
+edges = [S + pd.Timedelta(days=7 * k) for k in range(5)]
+folds = [(S + pd.Timedelta(days=3), edges[1])] + [(edges[i], edges[i + 1]) for i in range(1, 4)]
+scored = []  # one frame per fold: test rows + score + train cutoffs
+for fi, (lo, hi) in enumerate(folds, start=1):
+    tr = df["assessment_time"] < lo
+    te = (df["assessment_time"] >= lo) & (df["assessment_time"] < hi)
+    reg = LGBMRegressor(**v2.LGBM_PARAMS).fit(X_all[tr], df.loc[tr, "r_up_360m"])
+    p_tr, p_te = reg.predict(X_all[tr]), reg.predict(X_all[te])
+    net_tr = p_tr - df.loc[tr, "cost_base"].to_numpy()
+    t = df[te].copy()
+    t["score"], t["net_score"], t["fold"] = p_te, p_te - t["cost_base"], fi
+    t.attrs["cut"] = {q: float(np.quantile(p_tr, q)) for q in (0.95, 0.98, 0.99)}
+    t.attrs["net_cut95"] = float(np.quantile(net_tr, 0.95))
+    scored.append(t)
+    print(f"fold {fi} {lo:%m-%d}→{hi:%m-%d}: train {tr.sum():,} test {te.sum():,}")
+
+# COMMAND ----------
+
+def _top_k(t, k, col="score", min_score=None):
+    s = t if min_score is None else t[t[col] >= min_score]
+    s = s.assign(_d=s["assessment_time"].dt.floor("D")).sort_values(["_d", col], ascending=[True, False])
+    s = s.drop_duplicates(["_d", "token_id"])
+    return s.groupby("_d", group_keys=False).head(k).drop(columns="_d")
+
+
+RULES = {  # name -> fn(fold frame) -> selected signals (before one-position-per-token)
+    "R0 v2 rule (p95, all venues)": lambda t: t[t["score"] >= t.attrs["cut"][0.95]],
+    "R1 p98": lambda t: t[t["score"] >= t.attrs["cut"][0.98]],
+    "R2 p99": lambda t: t[t["score"] >= t.attrs["cut"][0.99]],
+    "R3 LaunchLab only, p95": lambda t: t[(t["score"] >= t.attrs["cut"][0.95]) & (t["dex_venue"].astype(str) == "raydium_launchlab")],
+    "R4 pump.fun only, p95": lambda t: t[(t["score"] >= t.attrs["cut"][0.95]) & (t["dex_venue"].astype(str) == "pumpdotfun")],
+    "R5 cost-aware: EV-cost >= train p95 of EV-cost": lambda t: t[t["net_score"] >= t.attrs["net_cut95"]],
+    "R6 top-2/day by EV-cost (EV-cost > 0)": lambda t: _top_k(t[t["net_score"] > 0], 2, "net_score"),
+    "R7 top-5/day by EV-cost (EV-cost > 0)": lambda t: _top_k(t[t["net_score"] > 0], 5, "net_score"),
+}
+
+rows, pooled = [], {}
+for name, rule in RULES.items():
+    parts = []
+    for t in scored:
+        sel = non_overlapping(rule(t))
+        sel = sel.assign(net=sel["r_up_360m"] - sel["cost_base"], net_s=sel["r_up_360m"] - sel["cost_stress"])
+        parts.append(sel)
+        rows.append({"rule": name, "fold": int(t["fold"].iloc[0]), "trades": len(sel),
+                     "mean_net": float(sel["net"].mean()) if len(sel) else np.nan})
+    p = pd.concat(parts)
+    pooled[name] = p
+res = pd.DataFrame(rows)
+fold_tbl = res.pivot(index="rule", columns="fold", values="mean_net").round(4)
+summary = pd.DataFrame([{
+    "rule": n, "trades": len(p), "trades_per_day": round(len(p) / 25, 1),
+    "mean_net_base": p["net"].mean(), "mean_net_stress": p["net_s"].mean(),
+    "lower_bound_90": block_bootstrap_lower_bound(p, p["net"]) if len(p) >= 30 else np.nan,
+    "hit_2x": (p["r_up_360m"] >= 0.999).mean(), "folds_positive": int((fold_tbl.loc[n] > 0).sum()),
+    "launchlab_share": (p["dex_venue"].astype(str) == "raydium_launchlab").mean(),
+} for n, p in pooled.items()]).round(4)
+display(summary)
+display(fold_tbl)
+
+# COMMAND ----------
+
+# Paste-ready block for docs/v3_variant_log.md
+print("| rule | trades | /day | mean net base | mean net stress | LB90 | folds>0 |")
+print("|---|---|---|---|---|---|---|")
+for r in summary.itertuples(index=False):
+    print(f"| {r.rule} | {r.trades} | {r.trades_per_day} | {r.mean_net_base:+.4f} | {r.mean_net_stress:+.4f} | "
+          f"{r.lower_bound_90:+.4f} | {r.folds_positive}/4 |")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## R9 — causal version of R7 (variant 9 of the budget)
+# MAGIC R7 ranked against the whole UTC day, including later candidates, so it's not tradeable.
+# MAGIC R9: trade if EV−cost ≥ the 5th-highest per-token EV−cost of the PREVIOUS 24h (hourly
+# MAGIC refresh) and > 0, first-come up to 5 per day, one position per token. History for each
+# MAGIC fold's first day = the last 24h of its training rows, scored by the same fold model.
+# MAGIC k = 5 is fixed (no sweep). Also prints concentration diagnostics for R7 and R9.
+
+# COMMAND ----------
+
+from backtest.causal_rules import rolling_top_k  # noqa: E402
+
+r9_parts = []
+for fi, (lo, hi) in enumerate(folds, start=1):
+    tr = df["assessment_time"] < lo
+    te = (df["assessment_time"] >= lo) & (df["assessment_time"] < hi)
+    tail = tr & (df["assessment_time"] >= lo - pd.Timedelta(hours=24))
+    reg = LGBMRegressor(**v2.LGBM_PARAMS).fit(X_all[tr], df.loc[tr, "r_up_360m"])
+    hist = df[tail | te][["token_id", "assessment_time", "cost_base"]].copy()
+    hist["net_score"] = reg.predict(X_all[tail | te]) - hist["cost_base"]
+    cands = df[te].copy()
+    cands["net_score"] = reg.predict(X_all[te]) - cands["cost_base"]
+    sel = rolling_top_k(cands, hist, k=5)
+    sel = sel.assign(net=sel["r_up_360m"] - sel["cost_base"], net_s=sel["r_up_360m"] - sel["cost_stress"], fold=fi)
+    r9_parts.append(sel)
+    print(f"fold {fi}: R9 trades {len(sel)}, mean net {sel['net'].mean():+.4f}")
+r9 = pd.concat(r9_parts)
+pooled["R9 causal top-5 (prev-24h threshold)"] = r9
+
+
+def _conc(p):
+    per_tok = p.groupby("token_id")["net"].sum().sort_values(ascending=False)
+    total = per_tok.sum()
+    return {"trades": len(p), "tokens": p["token_id"].nunique(), "mean_net": p["net"].mean(),
+            "mean_net_stress": p["net_s"].mean(),
+            "lb90": block_bootstrap_lower_bound(p, p["net"]) if len(p) >= 30 else np.nan,
+            "mean_net_ex_top1_token": p[p["token_id"] != per_tok.index[0]]["net"].mean(),
+            "mean_net_ex_top5_tokens": p[~p["token_id"].isin(per_tok.index[:5])]["net"].mean(),
+            "top5_tokens_share_of_pnl": per_tok.head(5).sum() / total if total > 0 else np.nan,
+            "positive_days_share": (p.groupby(p["assessment_time"].dt.floor("D"))["net"].sum() > 0).mean(),
+            "folds_positive": int((p.groupby("fold")["net"].mean() > 0).sum())}
+
+
+display(pd.DataFrame({n: _conc(pooled[n]) for n in ("R7 top-5/day by EV-cost (EV-cost > 0)",
+                                                     "R9 causal top-5 (prev-24h threshold)")}).T.round(4))
