@@ -1,0 +1,83 @@
+{
+  "contract_version": "v2",
+  "status": "holdout_only",
+  "model_file": "model_v2.txt",
+  "model_sha256": "3e6fdf5389013310870345491ecddbdbd333bfb6c990931cb73320458b8f288a",
+  "spec": "src/models/v2_spec.py",
+  "features": [
+    "trailing_volume_usd",
+    "trailing_trade_count",
+    "trailing_buy_count",
+    "trailing_sell_count",
+    "trailing_buy_sell_ratio",
+    "trailing_price_change_pct",
+    "chain_family",
+    "network",
+    "dex_venue",
+    "dex_protocol",
+    "minutes_since_launch",
+    "is_postgrad_at_t",
+    "curve_buy_share",
+    "curve_max_trade_share",
+    "curve_top_trader_share",
+    "curve_top_trader_share_max",
+    "minutes_since_graduation",
+    "flow_buy_share_15m",
+    "flow_max_trade_share_15m",
+    "flow_top_trader_share_15m",
+    "meta_host_group",
+    "meta_is_launch_tool"
+  ],
+  "categories": {
+    "chain_family": [
+      "solana"
+    ],
+    "network": [],
+    "dex_venue": [
+      "pumpdotfun",
+      "raydium_launchlab"
+    ],
+    "dex_protocol": [],
+    "meta_host_group": [
+      "api.vortexdeployer.com",
+      "fast-ipfs.com",
+      "gateway.pinata.cloud",
+      "ipfs.launchblitz.ai",
+      "ipfs2.extraction.live",
+      "ipfs_standard",
+      "m.rapidlaunch.io",
+      "md.sdfgsdfsdf.uk",
+      "meta.uxento.io",
+      "metadata.j7tracker.io",
+      "other_custom",
+      "other_pinata",
+      "pump.mypinata.cloud",
+      "storage.googleapis.com",
+      "usepaid.app",
+      "www.agencypad.fun"
+    ]
+  },
+  "target": "r_up_360m",
+  "lgbm_params": {
+    "random_state": 17,
+    "n_estimators": 300,
+    "learning_rate": 0.05,
+    "verbose": -1
+  },
+  "cutoff": 0.06849675093998497,
+  "cutoff_rule": "95th percentile of predicted EV on the training rows",
+  "train_rows": 667514,
+  "train_tokens": 18246,
+  "train_assessment_time_min": "2026-09-13T00:00:00+00:00",
+  "train_assessment_time_max": "2026-10-10T17:38:00+00:00",
+  "host_groups_file": "host_groups.json",
+  "n_host_groups": 15,
+  "libraries": {
+    "lightgbm": "4.7.0",
+    "pandas": "2.3.3",
+    "numpy": "2.3.4",
+    "scikit-learn": "1.7.2"
+  },
+  "python": "3.12.3",
+  "created_at": "2026-10-18T07:05:13.706405+00:00"
+}

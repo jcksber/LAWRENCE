@@ -2582,3 +2582,27 @@ Code: `src/ingestion/pumpfun_social.py` (+ 8 tests) replaces `pumpfun_replies.py
   - Expected ~137 trades/day (in-sample replay).
   - sha256 `1082b6879d86b97c916755a58db2d6d6b32da7e7f2345b3f785dd9547fc4a2dd`; lightgbm 4.7.0, pandas 2.3.3, numpy 2.3.4, scikit-learn 1.7.2.
 - 2026-10-17: frozen evaluator `src/backtest/shadow_eval_v1.py` + 7 tests (CONTRACT §11). It goes in the freeze commit with manifest.json and must not change after SHADOW_START.
+- 2026-10-18, **notebook 05 gate results** (rules set beforehand, above):
+  - **Check A:** 35,102 coins = all graduated pump.fun tokens except 1 (the single missing progress row). No duplicates. My earlier ~34.9k "expected" figure was an arithmetic slip, not a data issue.
+  - **Check B FAILED → callout features DROPPED from v2.** At top-50% truncation, the share of a coin's first 20 callouts kept had mean 0.855, p10 0.55 (gate ≥ 0.95 / ≥ 0.85) over 3,435 fully-observed coins. At 75% it would be borderline (0.958 / 0.85), but the gate was fixed at 50%. The API ranking keeps late winners, not early callers. Callouts collected LIVE by the runtime poller are unbiased, so a callout family can return in a later version trained on live-collected data.
+  - **Check C FAILED → launch socials DROPPED.** Within ipfs.io, coins whose metadata didn't resolve hit 2x first 29.4% vs 22.9% (mean r −2.5% vs −13.6%). Unresolved metadata tracks better outcomes, so the NaN pattern would leak.
+  - **Kept for v2:** `meta_host_group`, `meta_is_launch_tool` (on-chain at creation). Raw 2x-first rates by host range 17–33% (e.g. j7tracker 26.7%, usepaid 27.6%, googleapis 17.3% vs ipfs.io 23.3%). That's descriptive only; v2's test decides whether they help.
+- 2026-10-18: `notebooks/04d_v2_dev.py` compares V1 / V2a (+flow) / V2b (+flow + host) on post-grad rows from 2026-09-13 to 10-10 (rule 7 applied), using v1's spec and rule. Walk-forward over 4 weekly folds, each trained on all earlier rows. **Pre-set decision:** take the variant with the highest pooled mean net per trade only if it beats V1 in ≥3 of 4 folds; otherwise v2 = no feature change. Development only: the 10-03..10-10 week is a dev fold now, and the shadow window is untouched.
+- 2026-10-18, **04d result → v2 = V2b (v1 features + 8 flow + metadata host)**, by the pre-set rule (highest pooled mean net per trade AND beats V1 in ≥3/4 folds). Post-grad rows 09-13..10-10, walk-forward, v1 spec and rule, base costs:
+
+  | variant | trades | pooled mean net | 90% lower bound | folds > V1 | median Spearman |
+  |---|---|---|---|---|---|
+  | V1 | 4,240 | −2.16% | −3.38% | – | 0.233 |
+  | V2a (+flow) | 1,965 | −1.11% | −2.90% | 3 | 0.250 |
+  | V2b (+flow+host) | 2,440 | +0.11% | −1.45% | 3 | 0.246 |
+
+  - **Reading:** V2b improves on V1 by ~2.3 points per trade in development and is roughly break-even. Its lower bound is still < 0, so **it would FAIL the v1-style pre-registration on this data.** There's no demonstrated edge yet; the shadow window decides.
+  - Selection among 3 variants on data that includes the already-used 10-03 week means the +0.11% is optimistic.
+  - **Top gains:** trailing_price_change_pct, then curve_buy_share, curve_max_trade_share, curve_top_trader_share, minutes_since_graduation, curve_top_trader_share_max, meta_host_group. The flow_*_15m columns are small (mostly NaN post-grad).
+  - meta_host_group has small categories (107–191 coins), so overfitting risk is real. It survived walk-forward, but watch its share of gain.
+- **Training universe for v2:** post-grad rows ≥ 2026-09-13 only. Before that, top_trader_share is NaN by data era, which would teach "NaN = August".
+- **Serving consequences for contract v2 (to build):**
+  1. Live bars need per-bar flow stats (buy/sell quote volume, max trade, top-trader share), so `bars_v1` → `bars_v2`, plus a fixture regenerated with flow columns.
+  2. The host feature needs the on-chain metadata URI at launch, plus the frozen host→group map.
+  3. LaunchLab tokens had NO host in training, so live must also give NaN for LaunchLab even if a URI is available.
+- 2026-10-18: **Runtime spend deferred; testing moves to a pre-registered Dune holdout** (`contracts/v2/PREREG.md`). Window 10-11 → 11-01 (21 days, never pulled), v1 + v2 both frozen beforehand. PASS = 95% lower bound > 0 at base AND mean > 0 at stress (α 0.05 each, Bonferroni for 2 models). Freeze = the commit with v2's artifacts + PREREG + `holdout_eval_2026_10.py` + notebook 06, before any window-4 pull. Live shadow stays the gate before real money.
