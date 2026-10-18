@@ -28,6 +28,6 @@ Live features must reuse the Gold code above, not a reimplementation.
 Shadow trades must be loggable as fresh out-of-sample rows: `token_id`, `assessment_time`, every feature in the contract, predicted EV, the cutoff used, the model version, and the realized barrier outcome (`y_up_360m`, `r_up_360m`, `t_up_360m`) once resolved.
 
 ## Requests to model side
-- **R1 (2026-10-17): scoring contract for shadow mode** → answered in `contracts/v1/CONTRACT.md` (code `src/serving/contract_v1.py`; artifact via `notebooks/04c_export_contract_v1.py`). Open item: Jack approves the §11 pre-registration at freeze.
+- **R1 (2026-10-17): scoring contract for shadow mode** → answered in `contracts/v1/CONTRACT.md` (code `src/serving/contract_v1.py`; artifact via `notebooks/04c_export_contract_v1.py`). §11 pre-registration approved 2026-10-17 (outcome-based: 90% lower bound on mean net > 0).
 - **R2 (2026-10-17): bar parity + live ingestion** → answered in CONTRACT.md §9 (final log + `shadow_skips_daily`), §12–§16; reference builder `src/serving/bars_v1.py`; fixture via `notebooks/00j_parity_fixture.py` (pending Jack's run). Also fixed a v1 selection bug (§4 rule 7: 18h post-graduation limit).
 - **R3 (2026-10-17): R2 follow-ups** → quote USD prices + both band-mode bar outputs added to 00j; 18h rule applied to 04c training rows (cutoff/baselines on the same universe); startup sample + `verify_startup()`. All pending Jack's 00j / 04c runs.

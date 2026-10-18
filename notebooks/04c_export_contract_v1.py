@@ -92,13 +92,21 @@ print(f"cutoff (train 95th pct of predicted EV): {cutoff:.4f}")
 # COMMAND ----------
 
 model_file = f"model_{CONTRACT_VERSION}.txt"
-reg.booster_.save_model(f"{OUT}/{model_file}")
-with open(f"{OUT}/{model_file}", "rb") as f:
+# 2026-10-17: UC Volumes (FUSE) don't support append/seek, and LightGBM's
+# save_model appends the pandas category block after writing -> "Illegal seek".
+# Save to local disk, hash and reload THAT file, then copy it to the volume.
+import shutil  # noqa: E402
+LOCAL = f"/tmp/{model_file}"
+reg.booster_.save_model(LOCAL)
+with open(LOCAL, "rb") as f:
     sha = hashlib.sha256(f.read()).hexdigest()
+shutil.copyfile(LOCAL, f"{OUT}/{model_file}")
+with open(f"{OUT}/{model_file}", "rb") as f:
+    assert hashlib.sha256(f.read()).hexdigest() == sha, "volume copy differs from the saved model"
 
 # reload check: identical predictions from the saved file
 import lightgbm as lgb  # noqa: E402
-booster = lgb.Booster(model_file=f"{OUT}/{model_file}")
+booster = lgb.Booster(model_file=LOCAL)
 assert np.allclose(booster.predict(X), pred), "saved model predicts differently"
 
 categories = {c: [str(v) for v in X[c].cat.categories] for c in CATEGORICAL_FEATURE_COLUMNS}

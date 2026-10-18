@@ -132,16 +132,22 @@ Plus one daily table, **`shadow_skips_daily`**: `date`, `contract_version`, `rea
   - Measured throughput: about 4 tokens/s at 4 workers (3 requests per token). Back off on 429s.
 - **X: not in v1.**
 
-## 11. Pre-registration for the v1 shadow test (PROPOSED: Jack approves at freeze)
+## 11. Pre-registration for the v1 shadow test (APPROVED by Jack 2026-10-17)
 - **Freeze:** the commit that adds `contracts/v1/manifest.json`. Record `SHADOW_START` in `docs/decisions.md`: the first full UTC day after the runtime scores continuously.
-- **Fixed evaluation date:** `SHADOW_START + 21 days`.
-  - Monitoring for bugs and data gaps is allowed during the window, but shadow P&L must not trigger any change.
-  - If there are fewer than 300 non-overlapping trades at day 21, extend once to day 35. Still under 300 means *inconclusive*.
+- **Fixed evaluation date:** `SHADOW_START + 21 days`. The window is about covering different market days; v1 reaches the trade floor within days. Monitoring for bugs and data gaps is allowed, but shadow P&L must not trigger any change.
+- **Floor:** ≥ 100 non-overlapping trades at day 21. If not met, extend once to day 35; still short → *inconclusive*.
 - **Validity:**
   - Any change to the contract, artifact, cutoff or selection rule mid-window invalidates the window and restarts it under v2.
-  - Days with < 95% bar coverage for scored tokens are excluded and counted. More than 20% excluded days means *invalid*.
-- **Evaluation:** on pipeline-recomputed labels (§6), using the frozen rule and costs.
-- **PASS:** ≥ 300 trades AND mean net per trade > 0 at base costs AND mean net > 0 at stress costs.
+  - Days with < 95% bar coverage for scored tokens are excluded and counted; more than 20% excluded days → *invalid*.
+- **Evaluation:** on pipeline-recomputed labels (§6), using the frozen rule (one position per token, 2x / −50% / 6h) and costs.
+- **Evaluator (frozen code):** `src/backtest/shadow_eval_v1.evaluate(cands, cutoff, shadow_start, extended=, excluded_days=)`, tested in `tests/test_shadow_eval_v1.py`. Committed with the freeze; the verdict is whatever it returns.
+- **PASS** (judged on outcomes, with an honest error bar):
+  1. The **90% one-sided lower confidence bound on mean net return per trade > 0 at base costs**, and
+  2. **mean net return per trade > 0 at stress costs** (1%/side).
+  - The bound comes from a block bootstrap: resample **token-days** (all trades of a token on a day together), 10,000 draws, seed 17. One lucky token or one hot day can't carry it.
+  - Anything else → **FAIL**. A positive average alone does not pass.
+- **Reported, not judged:** per-trade distribution, per-token and per-day P&L, top-token share of P&L, live-vs-assumed fill slippage.
+- **Exploratory variant (cannot pass or fail):** *top-2-per-day*, i.e. the 2 highest-scoring candidates per UTC day among rows ≥ cutoff, same exit and costs. Reported on the same window to decide whether a selective rule deserves its own pre-registration. With ~42 trades in 21 days it's far too small to judge (SE ≈ ±8 points per trade).
 - **Other models:** any model whose contract is frozen (hash committed) before `SHADOW_START` may also be evaluated on this window. All such models must be listed at freeze, and the number tested is reported with the result (multiple-testing).
 
 ## 12. Bar construction (R2): how training bars were built

@@ -2570,3 +2570,15 @@ Code: `src/ingestion/pumpfun_social.py` (+ 8 tests) replaces `pumpfun_replies.py
   - Live band mode gave identical bars on all 20 tokens.
   - All 12 pump.fun graduates' canonical (busiest) pool = the earliest PumpSwap pool.
   - Dune run cost: ~29 credits for the 1st chunk + prices.
+- 2026-10-17, **v1 shadow pre-registration APPROVED** (CONTRACT.md §11), replacing the draft "≥300 trades AND mean net > 0".
+  - Jack's point: outcomes matter more than trade count (2 good trades/day would be a winning strategy).
+  - Agreed, with a correction: the trade minimum exists to separate edge from luck, not to reward volume. At a per-trade sd of ~0.5, 42 trades give a ±8-point SE.
+  - **Final rule:** 21-day fixed window; ≥100 non-overlapping trades (extend once to 35 days, else inconclusive). PASS = 90% one-sided lower bound on mean net/trade > 0 at base costs (block bootstrap over token-days, 10k draws, seed 17) AND mean net > 0 at stress costs.
+  - Exploratory, non-judged: top-2-per-day variant on the same window, for a possible future selective-rule pre-registration.
+- 2026-10-17, **04c v1 export:**
+  - Rule 7 dropped 15,034 of 1,336,584 labelled rows (1.1%).
+  - Trained on 1,321,550 rows / 37,823 tokens, 2026-08-14 → 2026-10-10 17:38.
+  - Cutoff (train p95) 0.0470, down from the failed model's 0.0656.
+  - Expected ~137 trades/day (in-sample replay).
+  - sha256 `1082b6879d86b97c916755a58db2d6d6b32da7e7f2345b3f785dd9547fc4a2dd`; lightgbm 4.7.0, pandas 2.3.3, numpy 2.3.4, scikit-learn 1.7.2.
+- 2026-10-17: frozen evaluator `src/backtest/shadow_eval_v1.py` + 7 tests (CONTRACT §11). It goes in the freeze commit with manifest.json and must not change after SHADOW_START.
