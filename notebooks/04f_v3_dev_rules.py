@@ -168,3 +168,70 @@ def _conc(p):
 
 display(pd.DataFrame({n: _conc(pooled[n]) for n in ("R7 top-5/day by EV-cost (EV-cost > 0)",
                                                      "R9 causal top-5 (prev-24h threshold)")}).T.round(4))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Variant 10 — V2b + part C features (creator + early buyers), rule R1 fixed
+# MAGIC Declared in `docs/v3_variant_log.md` before this cell was run. Same rows, folds, LightGBM
+# MAGIC params and R1 (p98 of the fold's own train predictions). Only change: the C feature
+# MAGIC columns from 05b are added (NaN for LaunchLab rows and tokens without early-buyer data).
+# MAGIC **Adopt only if** pooled mean net AND its 95% lower bound beat V2b's R1, and ≥3 of 4
+# MAGIC folds improve. No feature subset is re-fit here.
+
+# COMMAND ----------
+
+C_TOKEN = ["eb_buyers_slot0", "eb_non_creator_buyers_slot0", "eb_buyers_first3", "eb_supply_share_slot0",
+           "eb_supply_share_first3", "eb_creator_share_slot0", "cr_launches_7d", "cr_grads_7d",
+           "cr_grad_rate_7d", "launch_is_mayhem", "launch_non_sol_quote"]
+C_FLOW = ["ct_buys_n", "ct_sells_n", "ct_bought_share", "ct_sold_share", "ct_postgrad_sells_n",
+          "ct_net_share", "ct_min_since_last_sell"]
+C_FEATURES = C_TOKEN + C_FLOW
+
+tokf = spark.table("lawrence.gold.creator_token_features_v3").select("token_id", *C_TOKEN).toPandas()
+flowf = spark.table("lawrence.gold.creator_flow_features_v3").select("token_id", "assessment_time", *C_FLOW).toPandas()
+tokf.attrs = {}
+flowf.attrs = {}
+flowf["assessment_time"] = pd.to_datetime(flowf["assessment_time"], utc=True)
+dfc = df.merge(tokf, on="token_id", how="left").merge(flowf, on=["token_id", "assessment_time"], how="left")
+assert len(dfc) == len(df) and (dfc["token_id"].values == df["token_id"].values).all()
+pf = dfc["dex_venue"].astype(str) == "pumpdotfun"
+print(f"pump.fun rows with eb features: {dfc.loc[pf, 'eb_buyers_slot0'].notna().mean():.1%}; "
+      f"with ct features: {dfc.loc[pf, 'ct_buys_n'].notna().mean():.1%}")
+X_c = pd.concat([X_all, dfc[C_FEATURES].astype("float")], axis=1)
+
+v10_parts, imps = [], []
+for fi, (lo, hi) in enumerate(folds, start=1):
+    tr = dfc["assessment_time"] < lo
+    te = (dfc["assessment_time"] >= lo) & (dfc["assessment_time"] < hi)
+    reg = LGBMRegressor(**v2.LGBM_PARAMS).fit(X_c[tr], dfc.loc[tr, "r_up_360m"])
+    cut98 = float(np.quantile(reg.predict(X_c[tr]), 0.98))
+    t = dfc[te].copy()
+    t["score"] = reg.predict(X_c[te])
+    sel = non_overlapping(t[t["score"] >= cut98])
+    sel = sel.assign(net=sel["r_up_360m"] - sel["cost_base"], net_s=sel["r_up_360m"] - sel["cost_stress"], fold=fi)
+    v10_parts.append(sel)
+    imps.append(pd.Series(reg.booster_.feature_importance("gain"), index=X_c.columns, name=f"f{fi}"))
+v10 = pd.concat(v10_parts)
+base = pooled["R1 p98"].assign(fold=lambda d: d["fold"].astype(int))
+
+
+def _row(name, p):
+    return {"model": name, "trades": len(p), "mean_net_base": p["net"].mean(), "mean_net_stress": p["net_s"].mean(),
+            "lb95": block_bootstrap_lower_bound(p, p["net"], alpha=0.05) if len(p) >= 30 else np.nan,
+            "hit_2x": (p["r_up_360m"] >= 0.999).mean(),
+            "launchlab_share": (p["dex_venue"].astype(str) == "raydium_launchlab").mean()}
+
+
+cmp = pd.DataFrame([_row("V2b R1", base), _row("V10 = V2b + C, R1", v10)]).round(4)
+folds_cmp = pd.DataFrame({"V2b": base.groupby("fold")["net"].mean(), "V10": v10.groupby("fold")["net"].mean(),
+                          "V2b_n": base.groupby("fold").size(), "V10_n": v10.groupby("fold").size()}).round(4)
+folds_cmp["improved"] = folds_cmp["V10"] > folds_cmp["V2b"]
+display(cmp)
+display(folds_cmp)
+a, b = cmp.iloc[0], cmp.iloc[1]
+adopt = (b.mean_net_base > a.mean_net_base) and (b.lb95 > a.lb95) and (folds_cmp["improved"].sum() >= 3)
+print(f"DECISION (pre-declared rule): {'ADOPT' if adopt else 'REJECT'} variant 10 | "
+      f"folds improved {int(folds_cmp['improved'].sum())}/4")
+imp = pd.concat(imps, axis=1).mean(axis=1).sort_values(ascending=False)
+display((imp / imp.sum()).head(20).round(4).rename("gain_share").to_frame())

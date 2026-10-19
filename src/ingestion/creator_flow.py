@@ -29,17 +29,32 @@ from ingestion.postgrad_bars import _ts
 
 WSOL = "So11111111111111111111111111111111111111112"
 PUMP_SUPPLY = 1_000_000_000.0          # pump.fun tokens: 1B supply, 6 decimals (amounts are decimal-adjusted)
-CREATE_TABLE = "pumpdotfun_solana.pump_call_create"
+# 2026-10-18 probe (00k cell 2): pump.fun has TWO create instructions --
+# `create` (legacy SPL) and `create_v2` (Token-2022). Both are read and
+# unioned. Verified columns (create): account_mint, account_user, creator
+# (instruction arg), call_block_time, call_block_slot -- same in create_v2.
+CREATE_TABLES = ("pumpdotfun_solana.pump_call_create", "pumpdotfun_solana.pump_call_create_v2")
+CREATE_TABLE = CREATE_TABLES[0]  # probe only
+EVT_TABLE = "pumpdotfun_solana.pump_evt_createevent"  # launch source (see _creates)
 CREATE_MINT, CREATE_USER, CREATE_TIME, CREATE_SLOT = "account_mint", "account_user", "call_block_time", "call_block_slot"
+
+
+def _creates(start: datetime, end: datetime) -> str:
+    """All pump.fun creations in [start, end) from the CreateEvent log, which
+    fires on every create (both instructions) -- 2026-09-20 check: 30,783 events
+    = 248 `create` + 30,535 `create_v2`. One scan instead of a two-table union."""
+    return f"""SELECT mint, creator, evt_block_time AS created_at, evt_block_slot AS s0,
+         quote_mint, is_mayhem_mode
+  FROM {EVT_TABLE}
+  WHERE evt_block_time >= {_ts(start)} AND evt_block_time < {_ts(end)}"""
 EARLY_SLOTS = 3
 
 
 def creator_launches_sql(start: datetime, end: datetime) -> str:
     return f"""
-SELECT {CREATE_MINT} AS mint, {CREATE_USER} AS creator,
-       {CREATE_TIME} AS created_at, {CREATE_SLOT} AS create_slot
-FROM {CREATE_TABLE}
-WHERE {CREATE_TIME} >= {_ts(start)} AND {CREATE_TIME} < {_ts(end)}
+SELECT mint, creator, created_at, s0 AS create_slot, quote_mint, is_mayhem_mode FROM (
+  {_creates(start, end)}
+)
 """
 
 
@@ -48,11 +63,10 @@ def _graduates_created(start: datetime, end: datetime, grads_until: datetime) ->
     created in [start, end)."""
     return f"""
 c AS (
-  SELECT k.{CREATE_MINT} AS mint, k.{CREATE_USER} AS creator, k.{CREATE_TIME} AS created_at, k.{CREATE_SLOT} AS s0
-  FROM {CREATE_TABLE} k
+  SELECT k.mint, k.creator, k.created_at, k.s0
+  FROM ({_creates(start, end)}) k
   JOIN (SELECT DISTINCT baseMint FROM pumpswap_solana.pools WHERE created_at < {_ts(grads_until)}) p
-    ON p.baseMint = k.{CREATE_MINT}
-  WHERE k.{CREATE_TIME} >= {_ts(start)} AND k.{CREATE_TIME} < {_ts(end)}
+    ON p.baseMint = k.mint
 )"""
 
 
@@ -108,9 +122,43 @@ def summarize(sql: str) -> str:
     return f"WITH q AS ({sql}) SELECT count(*) AS n_rows FROM q"
 
 
-PROBE_SQL = """
-SELECT table_schema, table_name, column_name, data_type
-FROM information_schema.columns
-WHERE table_schema = 'pumpdotfun_solana' AND table_name LIKE '%create%'
-ORDER BY table_name, ordinal_position
+# 2026-10-18: information_schema.columns fails on Dune (TypeNotFoundException in
+# one catalog), so probe with SHOW TABLES + a 5-minute sample instead.
+PROBE_TABLES_SQL = "SHOW TABLES FROM pumpdotfun_solana LIKE '%create%'"
+PROBE_SAMPLE_SQL = f"""
+SELECT * FROM {CREATE_TABLES[1]}
+WHERE {CREATE_TIME} >= TIMESTAMP '2026-09-20 00:00:00' AND {CREATE_TIME} < TIMESTAMP '2026-09-20 01:00:00'
+LIMIT 2
+"""
+# launches per instruction over one hour -- how much create_v2 matters
+PROBE_COUNTS_SQL = f"""
+SELECT 'create' AS ix, count(*) AS n FROM {CREATE_TABLES[0]}
+WHERE {CREATE_TIME} >= TIMESTAMP '2026-09-20 00:00:00' AND {CREATE_TIME} < TIMESTAMP '2026-09-20 01:00:00'
+UNION ALL
+SELECT 'create_v2', count(*) FROM {CREATE_TABLES[1]}
+WHERE {CREATE_TIME} >= TIMESTAMP '2026-09-20 00:00:00' AND {CREATE_TIME} < TIMESTAMP '2026-09-20 01:00:00'
+"""
+
+# 2026-10-18: one day of cells 3-5 gave 248 launches and 10 graduates for
+# 2026-09-20 -- far too few for pump.fun. Full-day coverage check: each create
+# table, the CreateEvent table (emitted on every create, whoever calls it), and
+# PumpSwap pools created that day (a rough count of graduations) for reference.
+_DAY = "TIMESTAMP '2026-09-20 00:00:00' AND {c} < TIMESTAMP '2026-09-21 00:00:00'"
+PROBE_DAY_SQL = f"""
+SELECT 'call_create' AS src, count(*) AS n, count(DISTINCT account_mint) AS mints FROM {CREATE_TABLES[0]}
+WHERE call_block_time >= {_DAY.format(c='call_block_time')}
+UNION ALL
+SELECT 'call_create_v2', count(*), count(DISTINCT account_mint) FROM {CREATE_TABLES[1]}
+WHERE call_block_time >= {_DAY.format(c='call_block_time')}
+UNION ALL
+SELECT 'evt_createevent', count(*), NULL FROM {EVT_TABLE}
+WHERE evt_block_time >= {_DAY.format(c='evt_block_time')}
+UNION ALL
+SELECT 'pumpswap_pools', count(*), count(DISTINCT baseMint) FROM pumpswap_solana.pools
+WHERE created_at >= {_DAY.format(c='created_at')}
+"""
+PROBE_EVT_SAMPLE_SQL = f"""
+SELECT * FROM {EVT_TABLE}
+WHERE evt_block_time >= TIMESTAMP '2026-09-20 00:00:00' AND evt_block_time < TIMESTAMP '2026-09-20 00:10:00'
+LIMIT 2
 """

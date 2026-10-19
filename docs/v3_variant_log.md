@@ -44,3 +44,18 @@ R9 per fold: +14.4%, +5.6%, −24.5%, +19.8%.
 - The best causal rule is R1 (p98): +2.9%, LB90 −0.6%, 3/4 folds. It's the best of 9, so optimistic. It's kept as the default rule for v3's feature work (C), and won't be tuned further.
 - **Lesson for the log:** any per-period ranking rule must be checked for look-ahead in the ranking set itself, not only in features and labels.
 - Budget used: 9 of ~10. C and D need their own small, declared budget.
+
+### C data source fix (2026-10-18)
+00k first run read only `pump_call_create` (248 launches, 10 graduates on 2026-09-20).
+Coverage check: `pump_evt_createevent` = 30,783 = 248 `create` + 30,535 `create_v2`.
+`creator_flow._creates` now reads the CreateEvent table (adds `quote_mint`, `is_mayhem_mode`).
+One-day cost so far: cells 3-5 = 23 credits, cell 6 export = 13 (on the 248-launch subset; rerun).
+
+### C data pulled (2026-10-18, 00l)
+`bronze.pump_launches` 1,594,455 rows (08-30 → 10-10); `bronze.pump_early_buyers` 40,990 graduates
+and `bronze.pump_creator_trades` 403,921 rows (created 09-06 → 10-10). ~1k Dune credits. All reads < 10-11.
+Features built in `notebooks/05b_creator_features.py` → `gold.creator_token_features_v3`, `gold.creator_flow_features_v3`.
+Planned comparison (declared before any fit): budget used 9 of ~10, so C gets ONE fit (variant 10):
+V2b + all C features (`eb_*`, `cr_*`, `ct_*`, `launch_*`) vs the already-logged V2b, same 4 folds, rule R1 (p98) fixed.
+Adopt only if pooled mean net AND its 95% lower bound beat V2b, and ≥3 of 4 folds improve. Feature
+importances are reported but no feature subset is re-fit (that would be variant 11+).

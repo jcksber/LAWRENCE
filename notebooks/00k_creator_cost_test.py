@@ -29,10 +29,22 @@ CUTOFF = datetime(2026, 10, 11, tzinfo=timezone.utc)
 
 # COMMAND ----------
 
-# CELL 2 -- schema probe. Expect a table like pump_call_create with columns
-# account_mint, account_user, call_block_time, call_block_slot. If names differ,
-# paste this output before running anything else.
-display(pd.DataFrame(client.run_sql(cf.PROBE_SQL)))
+# CELL 2 -- probe: launches per create instruction (1 hour) + create_v2's columns.
+# If create_v2 lacks account_mint / creator / call_block_slot, stop and paste this.
+# (done 2026-10-18: tables = pump_call_create + pump_call_create_v2; columns verified)
+display(pd.DataFrame(client.run_sql(cf.PROBE_COUNTS_SQL)))
+v2_sample = pd.DataFrame(client.run_sql(cf.PROBE_SAMPLE_SQL))
+print("create_v2 columns:", sorted(v2_sample.columns))
+display(v2_sample[[c for c in ("account_mint", "account_user", "creator", "call_block_time", "call_block_slot", "name", "symbol")
+                   if c in v2_sample.columns]])
+
+# COMMAND ----------
+
+# CELL 2b -- full-day coverage check (cells 3-5 found only 248 launches / 10 grads).
+# Paste both outputs. Cheap: count-only scans of decoded tables.
+display(pd.DataFrame(client.run_sql(cf.PROBE_DAY_SQL)))
+evt = pd.DataFrame(client.run_sql(cf.PROBE_EVT_SAMPLE_SQL))
+print("createevent columns:", sorted(evt.columns))
 
 # COMMAND ----------
 
