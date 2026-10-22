@@ -59,3 +59,15 @@ Planned comparison (declared before any fit): budget used 9 of ~10, so C gets ON
 V2b + all C features (`eb_*`, `cr_*`, `ct_*`, `launch_*`) vs the already-logged V2b, same 4 folds, rule R1 (p98) fixed.
 Adopt only if pooled mean net AND its 95% lower bound beat V2b, and ≥3 of 4 folds improve. Feature
 importances are reported but no feature subset is re-fit (that would be variant 11+).
+
+### Variant 10 result (2026-10-18) — REJECTED by the pre-declared rule
+| model | trades | mean net base | mean net stress | LB95 | hit 2x | LaunchLab share |
+|---|---|---|---|---|---|---|
+| V2b R1 | 553 | +0.0293 | +0.0193 | -0.0154 | 0.273 | 0.128 |
+| V10 = V2b + C, R1 | 536 | +0.0316 | +0.0216 | -0.0146 | 0.297 | 0.058 |
+
+Per fold (mean net, V2b → V10): f1 +0.0003 → -0.0262, f2 +0.1181 → +0.0723, f3 +0.0398 → +0.0522, f4 -0.0121 → +0.0346.
+Mean and LB95 both slightly better, but only 2/4 folds improved → REJECT. Gain of +0.23 pts/trade is noise-sized.
+Note (not acted on): the two later folds improved, the two earlier ones got worse — consistent with C features
+needing more training history (C data starts 09-06), but testing that would be variant 11.
+Budget: 10 of ~10 used. No v3 model is frozen. v1/v2 go to the 11-02 holdout as pre-registered.
