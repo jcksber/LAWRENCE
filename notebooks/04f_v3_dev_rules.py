@@ -235,3 +235,85 @@ print(f"DECISION (pre-declared rule): {'ADOPT' if adopt else 'REJECT'} variant 1
       f"folds improved {int(folds_cmp['improved'].sum())}/4")
 imp = pd.concat(imps, axis=1).mean(axis=1).sort_values(ascending=False)
 display((imp / imp.sum()).head(20).round(4).rename("gain_share").to_frame())
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Exit variants E1 (ladder, v3 variant 11) and E2 (half at 2x, rest at 10x, variant 12)
+# MAGIC Declared in `docs/v3_variant_log.md` before running. Same ENTRIES as V2b + R1 (553 trades above);
+# MAGIC only the exit changes. E0 = current label (sell all at 2x / −50% / 6h). E1 = at each doubling of the
+# MAGIC reference price sell half of what's left, then reset reference, stop (−50%) and the 6h clock.
+# MAGIC Simulated from Silver 1-minute bars (`backtest.ladder_exit`, conservative fills, costs on every sale).
+# MAGIC E0 is re-simulated too: it must reproduce `r_up_360m` (simulator check). Post-graduation bars stop
+# MAGIC 24h after graduation, so a ladder still open then is closed at the last price (`truncated`).
+# MAGIC **Adopt E1 only if** pooled mean net AND 95% LB beat E0 at base costs, mean net beats E0 at stress,
+# MAGIC and ≥3 of 4 folds improve.
+
+# COMMAND ----------
+
+from backtest.ladder_exit import simulate  # noqa: E402
+
+tr_ = pooled["R1 p98"].copy()
+keys = spark.createDataFrame(tr_[["token_id"]].drop_duplicates())
+gold_px = (spark.table("lawrence.gold.entry_candidates").join(keys, "token_id")
+           .select("token_id", "assessment_time", "price_at_t", "price_unit").toPandas())
+gold_px.attrs = {}
+gold_px["assessment_time"] = pd.to_datetime(gold_px["assessment_time"], utc=True)
+tr_ = tr_.merge(gold_px, on=["token_id", "assessment_time"], how="left")
+bars = (spark.table("lawrence.silver.token_price_1m").join(keys, "token_id").filter("phase = 'postgrad'")
+        .select("token_id", "price_unit", "bar_start", "high", "low", "close").toPandas())
+bars.attrs = {}
+bars["ts"] = pd.to_datetime(bars["bar_start"], utc=True).astype("int64") / 1e9 + 60  # bar CLOSE time
+bars = bars.sort_values("ts")
+by_key = {k: (g["ts"].to_numpy(), g["high"].to_numpy(float), g["low"].to_numpy(float), g["close"].to_numpy(float))
+          for k, g in bars.groupby(["token_id", "price_unit"])}
+
+rows = []
+for r in tr_.itertuples(index=False):
+    arr = by_key.get((r.token_id, r.price_unit))
+    if arr is None or pd.isna(r.price_at_t):
+        continue
+    t0 = r.assessment_time.timestamp()
+    end = (r.first_pg + pd.Timedelta(hours=24)).timestamp()
+    for side_name, side in (("base", r.cost_base / 2), ("stress", r.cost_stress / 2)):
+        e0 = simulate(*arr, t0, float(r.price_at_t), side, ladder=False, data_end=end)
+        e1 = simulate(*arr, t0, float(r.price_at_t), side, ladder=True, data_end=end)
+        e2 = simulate(*arr, t0, float(r.price_at_t), side, ladder=True, data_end=end, final_mult=10.0, final_stop_mult=1.1)
+        rows.append({"token_id": r.token_id, "assessment_time": r.assessment_time, "fold": int(r.fold),
+                     "costs": side_name, "r_label": r.r_up_360m, "e0_gross": e0["gross"], "e0_net": e0["net"],
+                     "e1_net": e1["net"], "e1_rungs": e1["rungs"], "e1_trunc": e1["truncated"],
+                     "e2_net": e2["net"], "e2_exit": e2["exit"], "e2_rungs": e2["rungs"], "e2_trunc": e2["truncated"]})
+sim = pd.DataFrame(rows)
+b = sim[sim["costs"] == "base"]
+s = sim[sim["costs"] == "stress"]
+print(f"simulated {len(b)} of {len(tr_)} trades; E0 reproduces the label on "
+      f"{(abs(b['e0_gross'] - b['r_label']) < 1e-6).mean():.1%} (mean |diff| {abs(b['e0_gross'] - b['r_label']).mean():.4f})")
+lb = lambda d, col: block_bootstrap_lower_bound(d, d[col], alpha=0.05)
+exit_cmp = pd.DataFrame([
+    {"exit": "E0 sell all at 2x", "mean_net_base": b["e0_net"].mean(), "lb95": lb(b, "e0_net"),
+     "mean_net_stress": s["e0_net"].mean(), "median_net": b["e0_net"].median()},
+    {"exit": "E1 ladder", "mean_net_base": b["e1_net"].mean(), "lb95": lb(b, "e1_net"),
+     "mean_net_stress": s["e1_net"].mean(), "median_net": b["e1_net"].median()},
+    {"exit": "E2 half at 2x, rest at 10x (stop 1.1x)", "mean_net_base": b["e2_net"].mean(), "lb95": lb(b, "e2_net"),
+     "mean_net_stress": s["e2_net"].mean(), "median_net": b["e2_net"].median()},
+]).round(4)
+fold_exit = b.groupby("fold").agg(E0=("e0_net", "mean"), E1=("e1_net", "mean"), E2=("e2_net", "mean"),
+                                  n=("e0_net", "size")).round(4)
+fold_exit["E1_improved"] = fold_exit["E1"] > fold_exit["E0"]
+fold_exit["E2_improved"] = fold_exit["E2"] > fold_exit["E0"]
+display(exit_cmp)
+display(fold_exit)
+print("E1 rungs reached:", b["e1_rungs"].value_counts().sort_index().to_dict(),
+      f"| truncated at 24h data end: {b['e1_trunc'].mean():.1%}")
+print("E2 exits:", b["e2_exit"].value_counts().to_dict(), f"| reached 2x: {(b['e2_rungs'] >= 1).mean():.1%}",
+      f"| truncated: {b['e2_trunc'].mean():.1%}")
+a0 = exit_cmp.iloc[0]
+passed = {}
+for k, name in ((1, "E1"), (2, "E2")):
+    a = exit_cmp.iloc[k]
+    passed[name] = (a.mean_net_base > a0.mean_net_base) and (a.lb95 > a0.lb95) \
+        and (a.mean_net_stress > a0.mean_net_stress) and (fold_exit[f"{name}_improved"].sum() >= 3)
+    print(f"DECISION (pre-declared rule): {'PASS' if passed[name] else 'REJECT'} {name} | "
+          f"folds improved {int(fold_exit[f'{name}_improved'].sum())}/4")
+if all(passed.values()):
+    print("Both pass -> adopt the one with the higher LB95 (pre-declared tie-break)")

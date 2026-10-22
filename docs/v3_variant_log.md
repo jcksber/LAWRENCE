@@ -71,3 +71,30 @@ Mean and LB95 both slightly better, but only 2/4 folds improved → REJECT. Gain
 Note (not acted on): the two later folds improved, the two earlier ones got worse — consistent with C features
 needing more training history (C data starts 09-06), but testing that would be variant 11.
 Budget: 10 of ~10 used. No v3 model is frozen. v1/v2 go to the 11-02 holdout as pre-registered.
+
+### Variant 11 (declared 2026-10-22, before running) — exit ladder E1, beyond the original ~10 budget
+Jack's rule: at 2x sell half (recovers the stake), then treat the rest as a new position — sell half again at
+each further doubling, stop at -50% of the latest rung price, fresh 6h clock per rung. Same 553 V2b+R1 entries;
+only the exit changes (`backtest.ladder_exit`, 8 tests). E0 = current sell-all-at-2x, re-simulated as a check.
+Adopt only if mean net AND LB95 beat E0 at base, mean net beats E0 at stress, and ≥3/4 folds improve.
+Logged honestly as an extension of the budget: one more try raises the false-positive risk slightly.
+
+### Variant 12 (declared 2026-10-22, before running) — exit E2
+Jack's rule: sell half at 2x, then the rest at 10x the entry price; the rest's stop = 1.1x the entry price
+(a 45% drop from the 2x level, amended by Jack before any run so the second half also covers fees; +55% gross overall); fresh 6h clock after the first sale.
+Same entries and same adoption rule as variant 11. If E1 and E2 both pass, adopt the one with the higher LB95.
+Testing two exits on the same trades = two more chances for a lucky pass; noted, not corrected for.
+
+### Variants 11-12 results (2026-10-22) — both REJECTED
+Simulator check: E0 reproduces the label on 553/553 trades (mean |diff| 0.0000).
+| exit | mean net base | LB95 | mean net stress | median |
+|---|---|---|---|---|
+| E0 sell all at 2x | +0.0284 | -0.0157 | +0.0181 | -0.1638 |
+| E1 ladder | +0.0139 | -0.0397 | +0.0037 | -0.1638 |
+| E2 half at 2x, rest at 10x (stop 1.1x) | +0.0307 | -0.0364 | +0.0204 | -0.1638 |
+Folds improved: E1 1/4, E2 1/4. E1 rungs {0: 402, 1: 103, 2: 39, 3: 7, 5: 2}; E2 exits stop 305 / timeout 237 /
+target 11; 27.3% reached 2x; 0.9% truncated at the 24h data end.
+Reading: of the 151 trades that reached 2x, only 11 (7%) went on to 10x within the clock — below the ~1-in-9
+needed for E2 to beat selling everything; the ladder gives back more on the ones that fade than it gains on runners.
+(E0 here = +2.84% vs +2.93% from the label: the simulator charges fees on the sale's actual notional, which is
+more accurate.) Exits stay E0.
