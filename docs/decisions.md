@@ -2611,3 +2611,8 @@ Code: `src/ingestion/pumpfun_social.py` (+ 8 tests) replaces `pumpfun_replies.py
 - Frozen: `contracts/v2/` (model sha256 `3e6fdf53…288a`, cutoff 0.0685, 667,514 training rows 09-13 → 10-10 17:38, 15 host groups), `src/models/v2_spec.py`, `src/backtest/holdout_eval_2026_10.py`, `notebooks/06_holdout_eval_2026_10.py`, and `contracts/v2/PREREG.md`.
 - **No data after 2026-10-10 has been pulled.** Holdout window 2026-10-11 → 11-01. Pull after 2026-11-02 per PREREG, then run 06 once.
 - Models under test: v1 (cd6a098) and v2 (e8f36b2); α = 0.05 each.
+- **Pre-registration amendment 1 (2026-10-22, before any holdout data).** Adds "v2-R1" (frozen v2 model,
+  cutoff = train p98 instead of p95) as a third holdout test, the best dev rule from v3 part B. Three tests →
+  alpha 0.10/3 for all of v1, v2, v2-R1 (stricter than the original 0.05). Frozen files untouched; new
+  `holdout_eval_2026_10_amend1.py` (3 tests), `notebooks/04i` (cutoff + reproduction checks), and an official
+  verdict cell in notebook 06. See `contracts/v2/PREREG_AMENDMENT_1.md`.

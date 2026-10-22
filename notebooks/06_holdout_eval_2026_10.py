@@ -81,3 +81,23 @@ verdicts = {}
 for name, cut in (("v1", m1["cutoff"]), ("v2", m2["cutoff"])):
     verdicts[name] = H.evaluate_model(df.assign(score=df[f"score_{name}"]), cut, excluded)
 print(json.dumps(verdicts, indent=2, default=str))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Amendment 1 verdicts — OFFICIAL (contracts/v2/PREREG_AMENDMENT_1.md, written before the pull)
+# MAGIC Three tests (v1, v2, v2-R1) at alpha = 0.10/3 each. These supersede the alpha = 0.05 verdicts above,
+# MAGIC which are kept only to show the original plan. v2-R1 = the same frozen v2 scores, cutoff from
+# MAGIC `contracts/v2/amendment_r1.json`.
+
+# COMMAND ----------
+
+from backtest import holdout_eval_2026_10_amend1 as A  # noqa: E402
+
+a1 = json.load(open("../contracts/v2/amendment_r1.json"))
+assert a1["model_sha256"] == m2["model_sha256"], "amendment points at a different model"
+official = {}
+for name, score_col, cut in (("v1", "score_v1", m1["cutoff"]), ("v2", "score_v2", m2["cutoff"]),
+                             ("v2-R1", "score_v2", a1["cutoff"])):
+    official[name] = A.evaluate_model(df.assign(score=df[score_col]), cut, excluded)
+print(json.dumps(official, indent=2, default=str))
