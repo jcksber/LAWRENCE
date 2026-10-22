@@ -26,7 +26,7 @@ import pandas as pd
 from lightgbm import LGBMRegressor
 from pyspark.sql import functions as F
 
-sys.path.append("../src")
+sys.path.append("../../src")
 from backtest.shadow_eval_v1 import block_bootstrap_lower_bound, non_overlapping  # noqa: E402
 from models import v2_spec as v2  # noqa: E402
 from models.barrier_model import FEATURE_COLUMNS as V1_FEATURES  # noqa: E402

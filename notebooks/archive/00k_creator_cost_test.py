@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-sys.path.append("../src")
+sys.path.append("../../src")
 import importlib  # noqa: E402
 
 import ingestion.creator_flow as cf  # noqa: E402

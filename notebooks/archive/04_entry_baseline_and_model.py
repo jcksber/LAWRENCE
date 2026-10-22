@@ -57,7 +57,7 @@ dbutils.library.restartPython()
 
 import sys
 
-sys.path.append("../src")
+sys.path.append("../../src")
 
 import mlflow
 import mlflow.lightgbm
@@ -137,7 +137,7 @@ print(f"Loaded {len(entry_df):,} rows from {GOLD_ENTRY_TABLE}, "
 # (00f job pools_launchlab_v2); the config -> rates table is reference data
 # pulled once from Dune. Tokens with no known config get the flat 1.25%.
 POOL_METADATA_TABLE = "lawrence.bronze.pool_metadata"
-PLATFORM_CONFIGS_CSV = "../data/reference/launchlab_platform_configs.csv"
+PLATFORM_CONFIGS_CSV = "../../data/reference/launchlab_platform_configs.csv"
 
 _configs = pd.read_csv(PLATFORM_CONFIGS_CSV)
 _configs["creator_fee_rate"] = _configs["creator_fee_rate"].fillna(0)

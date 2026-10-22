@@ -23,7 +23,7 @@
 
 import sys
 
-sys.path.append("../src")
+sys.path.append("../../src")
 # Force-reload our modules each run (stale-import lesson, 2026-10-01).
 import importlib  # noqa: E402
 

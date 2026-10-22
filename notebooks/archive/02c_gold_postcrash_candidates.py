@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 from pyspark.sql import functions as F
 
-sys.path.append("../src")
+sys.path.append("../../src")
 import importlib  # noqa: E402
 
 import features.postcrash_features as pcf  # noqa: E402

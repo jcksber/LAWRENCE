@@ -38,7 +38,7 @@
 import sys
 from datetime import datetime, timedelta, timezone
 
-sys.path.append("../src")
+sys.path.append("../../src")
 from ingestion.dune_client import DuneClient  # noqa: E402
 
 DUNE_API_KEY = dbutils.secrets.get(scope="lawrence", key="dune_api_key")

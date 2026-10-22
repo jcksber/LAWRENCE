@@ -15,7 +15,7 @@
 import sys
 from datetime import datetime, timedelta, timezone
 
-sys.path.append("../src")
+sys.path.append("../../src")
 from ingestion.bitquery_client import BitqueryClient, ChainFamily, Venue  # noqa: E402
 
 # COMMAND ----------

@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 from lightgbm import LGBMRegressor
 
-sys.path.append("../src")
+sys.path.append("../../src")
 from backtest.shadow_eval_v1 import block_bootstrap_lower_bound  # noqa: E402
 from features.postcrash_features import FEATURES  # noqa: E402
 from models import v2_spec as v2  # noqa: E402

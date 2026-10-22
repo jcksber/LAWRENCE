@@ -30,7 +30,7 @@ dbutils.library.restartPython()
 
 import sys
 
-sys.path.append("../src")
+sys.path.append("../../src")
 
 import numpy as np
 import pandas as pd
@@ -107,7 +107,7 @@ print(f"Loaded {len(entry_df):,} rows from {GOLD_ENTRY_TABLE}, "
 # (00f job pools_launchlab_v2); the config -> rates table is reference data
 # pulled once from Dune. Tokens with no known config get the flat 1.25%.
 POOL_METADATA_TABLE = "lawrence.bronze.pool_metadata"
-PLATFORM_CONFIGS_CSV = "../data/reference/launchlab_platform_configs.csv"
+PLATFORM_CONFIGS_CSV = "../../data/reference/launchlab_platform_configs.csv"
 
 _configs = pd.read_csv(PLATFORM_CONFIGS_CSV)
 _configs["creator_fee_rate"] = _configs["creator_fee_rate"].fillna(0)
@@ -578,7 +578,7 @@ df = set_categorical_dtypes(df.sort_values("assessment_time").reset_index(drop=T
 
 # Per-token LaunchLab curve fee (same as the platform-fee cell; only matters
 # for curve rows, but kept identical so costs match 04/04b exactly).
-_cfg = pd.read_csv("../data/reference/launchlab_platform_configs.csv")
+_cfg = pd.read_csv("../../data/reference/launchlab_platform_configs.csv")
 _cfg["creator_fee_rate"] = _cfg["creator_fee_rate"].fillna(0)
 _ll = (spark.table("lawrence.bronze.pool_metadata")
        .filter("venue = 'raydium_launchlab' AND platform_config IS NOT NULL")

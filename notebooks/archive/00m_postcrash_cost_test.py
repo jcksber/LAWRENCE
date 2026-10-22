@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-sys.path.append("../src")
+sys.path.append("../../src")
 import importlib  # noqa: E402
 
 import ingestion.postcrash_bars as pc  # noqa: E402

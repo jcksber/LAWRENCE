@@ -21,7 +21,7 @@ import importlib
 import sys
 from datetime import datetime, timedelta, timezone
 
-sys.path.append("../src")
+sys.path.append("../../src")
 import ingestion.curve_bars as curve_bars  # noqa: E402
 import ingestion.postgrad_bars as postgrad_bars  # noqa: E402
 
