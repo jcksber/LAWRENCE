@@ -34,3 +34,11 @@ Shadow trades must be loggable as fresh out-of-sample rows: `token_id`, `assessm
 
 ## Status note (2026-10-18)
 The live shadow window (CONTRACT v1 §11) is **on hold**: Jack isn't funding the runtime until a model passes the pre-registered **Dune holdout 2026-10-11 → 2026-11-01** (`contracts/v2/PREREG.md`), which tests v1 and v2 on unseen history without any runtime. `SHADOW_START` isn't set. Contract v1 stays frozen and valid. If v2 passes, a v2 live contract (bars with flow stats + launch-time metadata host) will follow as a new request.
+
+## R5 (from model side, 2026-10-22): decision agent runtime + Isomux supervisor — DRAFT, not yet sent
+Spec: `docs/decision_agent_spec.md`. Model side is building the deterministic decision core in `src/decision/`
+(state machine, risk gate, paper broker, audit log, replay parity test). Product side, when Jack approves:
+(1) a live 1-minute bar feed for graduated pump.fun / LaunchLab tokens calling `Engine.on_bar_close` /
+`on_tick`; (2) persistence + display of the audit log; (3) an Isomux supervisor agent that reads state and
+may call only `pause` / `resume` / `kill` / report endpoints — never order placement. Live broker and keys:
+not requested; gated by spec §8.

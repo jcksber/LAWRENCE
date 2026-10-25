@@ -21,7 +21,7 @@ resources:
       tasks:
         - task_key: bronze_dex_pool_events
           notebook_task:
-            notebook_path: ../notebooks/00_bronze_dex_ingestion.py
+            notebook_path: ../notebooks/archive/00_bronze_dex_ingestion.py  # archived 2026-10-22; job stays PAUSED
           # new_cluster / existing_cluster_id: fill in when not serverless
         - task_key: silver_token_trades
           depends_on:

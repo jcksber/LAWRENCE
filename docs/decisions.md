@@ -2616,3 +2616,9 @@ Code: `src/ingestion/pumpfun_social.py` (+ 8 tests) replaces `pumpfun_replies.py
   alpha 0.10/3 for all of v1, v2, v2-R1 (stricter than the original 0.05). Frozen files untouched; new
   `holdout_eval_2026_10_amend1.py` (3 tests), `notebooks/04i` (cutoff + reproduction checks), and an official
   verdict cell in notebook 06. See `contracts/v2/PREREG_AMENDMENT_1.md`.
+- **Decision core started (2026-10-22, spec `docs/decision_agent_spec.md`).** `src/decision/`: types, `RiskGate`,
+  `PaperBroker`, `Engine` (per-token state machine; exits re-use the contract's own label logic so live exits =
+  training labels), `ContractV1` adapter (hash check + `verify_startup`), replay harness + `parity()`.
+  7 unit tests (`tests/test_decision_engine.py`). Replay parity on real bars: `notebooks/07_decision_replay_v1.py`.
+  Defaults per spec §5 (paper $100, ≤10 open, ≤30 entries/day) pending Jack's confirmation; v1 used for the
+  replay because it is the only contract with live serving code.
