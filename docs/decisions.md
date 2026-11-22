@@ -2627,3 +2627,8 @@ Code: `src/ingestion/pumpfun_social.py` (+ 8 tests) replaces `pumpfun_replies.py
   (allowed: a bar within the prior 2 min suffices) was missed and the engine entered 30 min later. Fix:
   `replay` ticks every minute per token (+6h tail); spec §4 now requires the live runtime to do the same.
   New test; 8/8 pass. Re-run 07.
+- **Holdout pull started as pre-registered (2026-11-22), option A (no amendment).** 00h WINDOW_END -> 11-02,
+  00f window 4 = (10-10, 11-02), 02 CURVE_DATA_END -> 11-02. Measured: 00h 96.9 credits for 2 pump.fun 6h
+  chunks (~48/chunk, ~2x October); 00f 81.6 credits for metadata + 1 PumpSwap chunk + 1 CPMM day. Estimated
+  remaining ~9.7k credits (00h ~6.4k, 00f ~3.3k). Cheaper options (curve bars for graduates only; shorter
+  window) were considered and not taken, so the test runs exactly as pre-registered.

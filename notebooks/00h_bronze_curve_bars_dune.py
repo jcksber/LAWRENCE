@@ -74,7 +74,7 @@ SQL_BUILDERS = {
 }
 
 # 2 = first two chunks (both pump.fun) to check credits. None = run everything not done.
-MAX_CHUNKS = 2  # 2026-11-22 holdout pull: measure 2 chunks first, then None
+MAX_CHUNKS = None  # 2026-11-22 holdout pull: measured 96.9 credits / 2 pump.fun chunks; full run
 
 BARS_TABLE = "lawrence.bronze.curve_bars_1m"
 PROGRESS_TABLE = "lawrence.bronze._curve_bars_progress"

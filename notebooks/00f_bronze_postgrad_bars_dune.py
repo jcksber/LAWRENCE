@@ -94,10 +94,10 @@ HORIZON_HOURS = 24  # 2026-09-26 decision: 1m bars, 24h (see decisions.md)
 PUMPSWAP_CHUNK_HOURS = 6  # ~54k bars/chunk at 00e's measured rate
 
 # 1 = measure one chunk first. None = run everything not yet done.
-MAX_PUMPSWAP_CHUNKS = 1  # 2026-11-22 holdout pull: measure 1 chunk first, then None (was ~23-30 credits/chunk)
+MAX_PUMPSWAP_CHUNKS = None  # 2026-11-22 holdout pull: full run (measure step used 81.6 credits incl. metadata + 1 CPMM day)
 # 2026-10-04: same guard for window 2's per-day CPMM bars (step 2). Step 1
 # (20 small first-trade queries) always runs in full first.
-MAX_CPMM_BAR_DAYS = 1  # 2026-11-22 holdout pull: measure 1 day first, then None (was ~40 credits/day)
+MAX_CPMM_BAR_DAYS = None  # 2026-11-22 holdout pull: full run
 
 POOLS_TABLE = "lawrence.bronze.pool_metadata"
 BARS_TABLE = "lawrence.bronze.postgrad_bars_1m"
