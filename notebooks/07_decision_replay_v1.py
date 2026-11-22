@@ -88,3 +88,25 @@ e["assessment_time"] = pd.to_datetime(e["assessment_time"], utc=True)
 m = e.merge(bt[["token_id", "assessment_time", "r_up_360m", "score"]], on=["token_id", "assessment_time"], how="outer", indicator=True)
 display(m[m["_merge"] != "both"].head(20))
 display(engine.log.frame()["event"].value_counts().rename("events").to_frame())
+
+# COMMAND ----------
+
+# DEBUG (2026-10-25): why does the engine skip the backtest's 06:25 entry on token Hmuv...?
+TOK = "HmuvHCDA7MjAxKr2BrARGhsWcxKotADopeLjcUTnGHt5"
+d = tokens[TOK]
+b = d["bars"]
+print("duplicate bar_start rows:", int(b.duplicated("bar_start").sum()), "| phases:", b["phase"].value_counts().to_dict())
+au = engine.log.frame()
+display(au[au["token_id"] == TOK])
+for hhmm in ("06:10", "06:25", "06:40", "06:55"):
+    t = pd.Timestamp(f"2026-10-05 {hhmm}", tz="UTC")
+    closed = b[b["bar_start"] + pd.Timedelta(minutes=1) <= t]
+    row, why = c1.select_row(closed, t, launch_time=d["launch_time"], launch_venue=d["launch_venue"], observed_from_launch=True)
+    s_eng = float(contract.booster.predict(c1.to_model_frame([row], contract.manifest["categories"]))[0]) if row else None
+    gr = g[(g["token_id"] == TOK) & (g["assessment_time"] == t)]
+    s_gold = float(gr["score"].iloc[0]) if len(gr) else None
+    print(hhmm, "| select_row:", why, "| engine score:", s_eng, "| gold score:", s_gold)
+    if row is not None and len(gr):
+        diffs = {k: (row.get(k), gr[k].iloc[0]) for k in c1.FEATURE_COLUMNS
+                 if str(row.get(k)) != str(gr[k].iloc[0])}
+        print("   feature differences (engine, gold):", diffs)

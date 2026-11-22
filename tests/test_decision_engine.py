@@ -97,3 +97,10 @@ def test_parity_pass_and_fail():
     assert parity(tr, bt)["status"] == "PASS"
     bt2 = pd.concat([bt, pd.DataFrame({"token_id": ["B"], "assessment_time": [T0], "r_up_360m": [0.1]})])
     assert parity(tr, bt2)["status"] == "FAIL"
+
+
+def test_replay_ticks_every_minute_not_only_on_bar_closes():
+    # bars at minutes 0,1,2 then a gap; the candidate time is minute 4 (no bar closes then)
+    b = bars([1.0, 1.0, 1.0])
+    eng, tr = run({"A": b}, {("A", 4): 0.3})
+    assert (eng.log.frame()["event"] == "enter").sum() == 1

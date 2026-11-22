@@ -11,14 +11,20 @@ import pandas as pd
 from decision.engine import Engine
 
 
+TAIL = pd.Timedelta(minutes=360)  # keep ticking 6h past the last bar so time-outs resolve
+
+
 def replay(engine: Engine, tokens: dict[str, dict]) -> pd.DataFrame:
     """tokens: token_id -> {"bars": DataFrame (BAR_COLUMNS), "launch_time", "launch_venue"}.
-    Calls engine.on_bar_close at every bar close time, in global time order (ties by token id)."""
+    Calls the engine for every token EVERY MINUTE from its first bar close to its last bar close + 6h, in
+    global time order (ties by token id) -- as a live runtime ticking each minute would. (2026-10-24 fix:
+    calling only at the token's own bar closes missed candidate times with no bar closing at that minute.)"""
     heap = []
     for tok, d in tokens.items():
         b = d["bars"].sort_values("bar_start").reset_index(drop=True)
         d["bars"] = b
-        for t in b["bar_start"] + pd.Timedelta(minutes=1):
+        closes = b["bar_start"] + pd.Timedelta(minutes=1)
+        for t in pd.date_range(closes.min(), closes.max() + TAIL, freq="1min"):
             heap.append((t, tok))
     heapq.heapify(heap)
     while heap:

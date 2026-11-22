@@ -2622,3 +2622,8 @@ Code: `src/ingestion/pumpfun_social.py` (+ 8 tests) replaces `pumpfun_replies.py
   7 unit tests (`tests/test_decision_engine.py`). Replay parity on real bars: `notebooks/07_decision_replay_v1.py`.
   Defaults per spec §5 (paper $100, ≤10 open, ≤30 entries/day) pending Jack's confirmation; v1 used for the
   replay because it is the only contract with live serving code.
+- **Replay parity run 1 (2026-10-24): 10/11 trades matched exactly (max return diff 0.0), 1 timing mismatch.**
+  The harness only called the engine at the token's own bar closes; a candidate at a minute with no bar close
+  (allowed: a bar within the prior 2 min suffices) was missed and the engine entered 30 min later. Fix:
+  `replay` ticks every minute per token (+6h tail); spec §4 now requires the live runtime to do the same.
+  New test; 8/8 pass. Re-run 07.

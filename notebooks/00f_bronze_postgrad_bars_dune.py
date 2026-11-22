@@ -85,6 +85,8 @@ WINDOWS = [
     # Window 3 (2026-10-11): the pre-registered out-of-sample test period
     # (docs/decisions.md). Never used for training or tuning.
     (datetime(2026, 10, 3, tzinfo=timezone.utc), datetime(2026, 10, 10, tzinfo=timezone.utc)),
+    # Window 4 (2026-11-22): the pre-registered Dune holdout pull (contracts/v2/PREREG.md).
+    (datetime(2026, 10, 10, tzinfo=timezone.utc), datetime(2026, 11, 2, tzinfo=timezone.utc)),
 ]
 BACKFILL_WINDOW_START, BACKFILL_WINDOW_END = WINDOWS[0]  # window 1 (REPLACES_VENUE applies only here)
 
@@ -92,10 +94,10 @@ HORIZON_HOURS = 24  # 2026-09-26 decision: 1m bars, 24h (see decisions.md)
 PUMPSWAP_CHUNK_HOURS = 6  # ~54k bars/chunk at 00e's measured rate
 
 # 1 = measure one chunk first. None = run everything not yet done.
-MAX_PUMPSWAP_CHUNKS = None  # 2026-10-11: per-chunk cost known (~23-30 credits)
+MAX_PUMPSWAP_CHUNKS = 1  # 2026-11-22 holdout pull: measure 1 chunk first, then None (was ~23-30 credits/chunk)
 # 2026-10-04: same guard for window 2's per-day CPMM bars (step 2). Step 1
 # (20 small first-trade queries) always runs in full first.
-MAX_CPMM_BAR_DAYS = None  # 2026-10-11: per-day cost known (~40 credits)
+MAX_CPMM_BAR_DAYS = 1  # 2026-11-22 holdout pull: measure 1 day first, then None (was ~40 credits/day)
 
 POOLS_TABLE = "lawrence.bronze.pool_metadata"
 BARS_TABLE = "lawrence.bronze.postgrad_bars_1m"

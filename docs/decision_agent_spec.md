@@ -56,6 +56,9 @@ WATCHING ──(score ≥ cutoff, risk gate OK)──> ENTERING ──fill──
    └────────────── COOLDOWN <──── CLOSED <── EXITING <──────────────┘ 6h elapsed      → EXIT_TIMEOUT
 ```
 - Assess only at contract assessment times (closed bars, rule 7: ≤ 18h after graduation).
+- **The runtime must call the engine for every watched token EVERY MINUTE**, not only when that token's bar
+  closes: a valid candidate time only needs a bar in the previous 2 minutes (replay parity found this,
+  2026-10-24).
 - One open position per token (as in training); a token re-enters WATCHING only after its trade resolves.
 - Exits use the same barrier logic as the label (`resolve_outcome`): a bar touching both levels = stop.
 - Every transition writes an audit record (§6).
