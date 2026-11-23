@@ -67,8 +67,10 @@ class Engine:
         if closed.empty:
             return
         if token_id in self.open:
-            self._check_exit(self.open[token_id], closed, now)
-            return
+            # 2026-11-22 parity fix: if the position closes at (or before) `now`, fall through and assess
+            # this same minute -- the backtest's one-position rule frees the token AT its exit time.
+            if not self._check_exit(self.open[token_id], closed, now):
+                return
         if self.killed:
             return
         a = self.contract.assess(token_id, closed, now, launch_time=launch_time, launch_venue=launch_venue,
@@ -97,12 +99,14 @@ class Engine:
                        fill_px=fill.price, slippage_bps=fill.slippage_bps, features=a.features)
 
     # --- internals -------------------------------------------------------------------------------------
-    def _check_exit(self, p: Position, closed: pd.DataFrame, now: datetime) -> None:
+    def _check_exit(self, p: Position, closed: pd.DataFrame, now: datetime) -> bool:
+        """True if the position closed (its exit time is <= now)."""
         out = self.contract.resolve(closed, p.entry_time, p.entry_price, launch_venue=p.launch_venue,
                                     observed_until=now)
         if out is None or pd.Timestamp(out["exit_time"]) > pd.Timestamp(now):
-            return
+            return False
         self._close(p, out["exit_time"], out["barrier_hit"], out["return"])
+        return True
 
     def _close(self, p: Position, ts: datetime, reason: str, r_gross: float) -> None:
         cost = self.contract.round_trip_cost(p.launch_venue)

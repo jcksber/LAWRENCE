@@ -2658,3 +2658,9 @@ Reading:
   within the whole UTC day, the same look-ahead as rule R7, so it is not a tradeable result.
 - Per PREREG.md: no live spend. Record and stop. Any new model is a new pre-registration on a later window.
 - Dune credits for the pull: 6,676.6 (measured).
+- **Replay parity root cause found (2026-11-22).** The one mismatch (token Hmuv…, backtest entry 10-05 06:25,
+  engine 06:55) was not a feature or score difference (debug: identical scores, no feature diffs, no duplicate
+  bars). The engine's previous position on that token timed out AT 06:25; the backtest's one-position rule frees
+  the token at its exit time, but the engine returned after closing and skipped assessing that minute. Fix:
+  `Engine.on_bar_close` falls through to assessment when the open position closes in the same tick. New test;
+  9/9 engine tests pass. Re-run 07 (expect 11/11).

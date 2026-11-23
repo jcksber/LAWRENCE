@@ -104,3 +104,12 @@ def test_replay_ticks_every_minute_not_only_on_bar_closes():
     b = bars([1.0, 1.0, 1.0])
     eng, tr = run({"A": b}, {("A", 4): 0.3})
     assert (eng.log.frame()["event"] == "enter").sum() == 1
+
+
+def test_reenters_at_the_exit_minute_like_the_backtest():
+    # enter at minute 2 (price 1.0); 2x on the bar closing at minute 4 -> exit at minute 4;
+    # a candidate AT minute 4 must be taken (backtest frees the token at its exit time)
+    b = bars([1.0, 1.0, 1.0, 2.5, 2.5, 2.5], highs=[1.0, 1.0, 1.0, 2.5, 2.5, 2.5])
+    eng, tr = run({"A": b}, {("A", 2): 0.3, ("A", 4): 0.3})
+    enters = eng.log.frame().query("event == 'enter'")
+    assert len(enters) == 2 and enters["ts"].iloc[1] == T0 + timedelta(minutes=4)

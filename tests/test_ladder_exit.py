@@ -104,3 +104,10 @@ def test_e3_stop_wins_tie_and_gap_fills_at_close():
 def test_e3_several_targets_in_one_bar_and_no_time_limit():
     r = simulate_schedule(*bars([(1, 4.5, 1.5, 4.0), (600, 4.2, 3.9, 4.1)]), T0, 1.0, 0.0)
     assert r["rungs"] == 2 and r["truncated"] and r["gross"] == pytest.approx(0.5 * 2 + 0.25 * 4 + 0.25 * 4.1 - 1)
+
+
+def test_e3_exit_ts():
+    r = simulate_schedule(*bars([(1, 1.1, 0.9, 1.0), (5, 1.0, 0.7, 0.75)]), T0, 1.0, 0.0)
+    assert r["exit"] == "stop" and r["exit_ts"] == 5 * 60
+    r2 = simulate_schedule(*bars([(1, 1.1, 0.9, 1.0)]), T0, 1.0, 0.0, data_end=3600.0)
+    assert r2["exit"] == "end_of_data" and r2["exit_ts"] == 3600.0
