@@ -86,7 +86,11 @@ print(res)
 e = eng_trades.rename(columns={"entry_time": "assessment_time"})[["token_id", "assessment_time", "r_gross", "exit_reason"]]
 e["assessment_time"] = pd.to_datetime(e["assessment_time"], utc=True)
 m = e.merge(bt[["token_id", "assessment_time", "r_up_360m", "score"]], on=["token_id", "assessment_time"], how="outer", indicator=True)
-display(m[m["_merge"] != "both"].head(20))
+mism = m[m["_merge"] != "both"]
+if mism.empty:
+    print("no mismatched trades")
+else:
+    display(mism.head(20))
 display(engine.log.frame()["event"].value_counts().rename("events").to_frame())
 
 # COMMAND ----------
@@ -97,7 +101,8 @@ d = tokens[TOK]
 b = d["bars"]
 print("duplicate bar_start rows:", int(b.duplicated("bar_start").sum()), "| phases:", b["phase"].value_counts().to_dict())
 au = engine.log.frame()
-display(au[au["token_id"] == TOK])
+if (au["token_id"] == TOK).any():
+    display(au[au["token_id"] == TOK])
 for hhmm in ("06:10", "06:25", "06:40", "06:55"):
     t = pd.Timestamp(f"2026-10-05 {hhmm}", tz="UTC")
     closed = b[b["bar_start"] + pd.Timedelta(minutes=1) <= t]

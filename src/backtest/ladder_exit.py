@@ -107,7 +107,7 @@ def simulate_schedule(ts: np.ndarray, hi: np.ndarray, lo: np.ndarray, close: np.
         if l <= stop:
             px = c if (h < stop and not np.isnan(c)) else stop
             proceeds += units * px
-            return _out(proceeds, p0, side_cost, rungs, "stop", False)
+            return {**_out(proceeds, p0, side_cost, rungs, "stop", False), "exit_ts": float(ts[i])}
         while k < len(schedule) and h >= p0 * schedule[k][0]:
             sell = units * schedule[k][1]
             proceeds += sell * p0 * schedule[k][0]
@@ -115,7 +115,9 @@ def simulate_schedule(ts: np.ndarray, hi: np.ndarray, lo: np.ndarray, close: np.
             rungs += 1
             k += 1
             if units <= 1e-12:
-                return _out(proceeds, p0, side_cost, rungs, "target", False)
+                return {**_out(proceeds, p0, side_cost, rungs, "target", False), "exit_ts": float(ts[i])}
         i += 1
     proceeds += units * last_px
-    return _out(proceeds, p0, side_cost, rungs, "end_of_data", True)
+    # held until the data ends: the position counts as open until data_end (or the last bar if none given)
+    exit_ts = float(data_end) if data_end is not None else (float(ts[-1]) if len(ts) else float(t0))
+    return {**_out(proceeds, p0, side_cost, rungs, "end_of_data", True), "exit_ts": exit_ts}

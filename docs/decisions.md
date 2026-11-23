@@ -2664,3 +2664,7 @@ Reading:
   the token at its exit time, but the engine returned after closing and skipped assessing that minute. Fix:
   `Engine.on_bar_close` falls through to assessment when the open position closes in the same tick. New test;
   9/9 engine tests pass. Re-run 07 (expect 11/11).
+- **v5 set up (2026-11-22), plan in `docs/v5_plan.md` (written before any result).** Target = E3 net return,
+  history 09-13 → 11-01, +11 market-context features. New: `features/market_context.py` (2 tests),
+  `simulate_schedule` returns `exit_ts` (17 ladder tests), notebooks 02d (labels + context tables) and 04j
+  (B0 vs v5, 6 folds, pre-declared freeze rule).
