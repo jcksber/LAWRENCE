@@ -27,3 +27,7 @@ early-curve "signal" is mostly latency; exits beyond sell-all-at-2x didn't help.
 3,383 trades), v2 −4.47% (LB −6.46%, 2,640), v2-R1 −5.46% (LB −8.96%, 867). Details in decisions.md.
 **Future work (not started):** point-in-time social data (watch-list posts) and tracked wallets
 (`tracked_wallets.md`).
+
+**Post-holdout exploration (2026-11-22):** exit E3 (Jack): sell 50% of the remaining position at 2x/4x/6x/8x
+of entry, the rest at 10x; stop −20% from entry (fixed); no time limit. Notebook 08, on v2-R1 entries over
+dev + holdout. Exploratory only: the holdout is already judged, so any adoption needs a new forward window.

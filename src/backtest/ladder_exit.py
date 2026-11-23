@@ -80,3 +80,42 @@ def _out(proceeds: float, p0: float, side_cost: float, rungs: int, kind: str, tr
     gross = proceeds / p0 - 1
     net = proceeds * (1 - side_cost) / p0 - (1 + side_cost)
     return {"net": float(net), "gross": float(gross), "rungs": rungs, "exit": kind, "truncated": truncated}
+
+
+# --- E3 (Jack, 2026-11-22): fixed take-profit schedule + fixed stop from the entry price --------------------
+E3_SCHEDULE = ((2.0, 0.5), (4.0, 0.5), (6.0, 0.5), (8.0, 0.5), (10.0, 1.0))  # (multiple of entry, share of REMAINING)
+E3_STOP = 0.8                                                                # -20% from the ENTRY price, never moves
+
+
+def simulate_schedule(ts: np.ndarray, hi: np.ndarray, lo: np.ndarray, close: np.ndarray, t0: float, p0: float,
+                      side_cost: float, *, schedule=E3_SCHEDULE, stop_mult: float = E3_STOP,
+                      data_end: float | None = None) -> dict:
+    """Resting limit sells at fixed multiples of the entry price, each selling a share of what is still held,
+    and a stop at `stop_mult` x entry for everything left. No time limit: whatever is left when the bars run
+    out (or at `data_end`) is sold at the last close (`truncated` = True).
+    Conservative fills: a bar that touches the stop counts as the stop FIRST (even if it also touched targets);
+    a gapped stop (whole bar below it) fills at the bar's close; several targets inside one bar all fill."""
+    units, proceeds, rungs, k = 1.0, 0.0, 0, 0
+    stop = p0 * stop_mult
+    last_px = p0
+    i = int(np.searchsorted(ts, t0, side="right"))
+    end = data_end if data_end is not None else np.inf
+    while i < len(ts) and ts[i] <= end:
+        h, l, c = hi[i], lo[i], close[i]
+        if not np.isnan(c):
+            last_px = c
+        if l <= stop:
+            px = c if (h < stop and not np.isnan(c)) else stop
+            proceeds += units * px
+            return _out(proceeds, p0, side_cost, rungs, "stop", False)
+        while k < len(schedule) and h >= p0 * schedule[k][0]:
+            sell = units * schedule[k][1]
+            proceeds += sell * p0 * schedule[k][0]
+            units -= sell
+            rungs += 1
+            k += 1
+            if units <= 1e-12:
+                return _out(proceeds, p0, side_cost, rungs, "target", False)
+        i += 1
+    proceeds += units * last_px
+    return _out(proceeds, p0, side_cost, rungs, "end_of_data", True)

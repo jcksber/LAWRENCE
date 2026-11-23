@@ -79,3 +79,28 @@ def test_e2_stop_at_1_1x_covers_fees():
     rows = [(1, 2.0, 1.5, 2.0), (2, 2.5, 1.05, 1.2)]
     r = simulate(*bars(rows), T0, 1.0, 0.0, ladder=True, final_mult=10.0, final_stop_mult=1.1)
     assert r["exit"] == "stop" and r["gross"] == pytest.approx(0.5 * 2 + 0.5 * 1.1 - 1)  # +55%
+
+
+from backtest.ladder_exit import simulate_schedule  # noqa: E402
+
+
+def test_e3_full_ladder_to_10x():
+    r = simulate_schedule(*bars([(1, 2.0, 1.5, 2.0), (2, 4.0, 3.0, 4.0), (3, 6.0, 5.0, 6.0), (4, 8.0, 7.0, 8.0),
+                                 (5, 10.0, 9.0, 10.0)]), T0, 1.0, 0.0)
+    assert r["exit"] == "target" and r["rungs"] == 5
+    assert r["gross"] == pytest.approx(0.5 * 2 + 0.25 * 4 + 0.125 * 6 + 0.0625 * 8 + 0.0625 * 10 - 1)  # +287.5%
+
+
+def test_e3_stop_from_entry_after_2x_keeps_40pct():
+    r = simulate_schedule(*bars([(1, 2.0, 1.5, 2.0), (2, 1.9, 0.7, 0.8)]), T0, 1.0, 0.0)
+    assert r["exit"] == "stop" and r["gross"] == pytest.approx(0.5 * 2 + 0.5 * 0.8 - 1)  # +40%
+
+
+def test_e3_stop_wins_tie_and_gap_fills_at_close():
+    assert simulate_schedule(*bars([(1, 2.5, 0.7, 1.0)]), T0, 1.0, 0.0)["gross"] == pytest.approx(-0.2)
+    assert simulate_schedule(*bars([(1, 0.5, 0.3, 0.4)]), T0, 1.0, 0.0)["gross"] == pytest.approx(-0.6)
+
+
+def test_e3_several_targets_in_one_bar_and_no_time_limit():
+    r = simulate_schedule(*bars([(1, 4.5, 1.5, 4.0), (600, 4.2, 3.9, 4.1)]), T0, 1.0, 0.0)
+    assert r["rungs"] == 2 and r["truncated"] and r["gross"] == pytest.approx(0.5 * 2 + 0.25 * 4 + 0.25 * 4.1 - 1)
