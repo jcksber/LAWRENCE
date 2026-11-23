@@ -2632,3 +2632,29 @@ Code: `src/ingestion/pumpfun_social.py` (+ 8 tests) replaces `pumpfun_replies.py
   chunks (~48/chunk, ~2x October); 00f 81.6 credits for metadata + 1 PumpSwap chunk + 1 CPMM day. Estimated
   remaining ~9.7k credits (00h ~6.4k, 00f ~3.3k). Cheaper options (curve bars for graduates only; shorter
   window) were considered and not taken, so the test runs exactly as pre-registered.
+- **Holdout pull complete (2026-11-22).** 00h: 200/200 pump.fun 6h chunks + 50/50 LaunchLab days `success`
+  (window 09-13 → 11-02). 00f: 320/320 PumpSwap chunks, 50/50 CPMM days, 50/50 CPMM first-trade days, 4+4 pool
+  metadata jobs `success` (windows 1-4). Earlier `failed`/`partial` rows were later re-run whole. Total Dune
+  credits for the pull: 6,676.6 measured (estimate was ~9.9k). Next: 00i (graduated + URI backfill), 01b, 02, 06.
+
+## 2026-11-22 — Pre-registered Dune holdout 2026-10-11 → 11-01: all three models FAIL
+
+Official verdicts (notebook 06, Amendment 1 cell; alpha = 0.10/3 per model; 0 excluded days):
+
+| | v1 | v2 | v2-R1 |
+|---|---|---|---|
+| trades / tokens | 3,383 / 1,774 | 2,640 / 1,338 | 867 / 480 |
+| mean net, base | -5.28% | -4.47% | -5.46% |
+| lower bound (96.7%), base | -7.31% | -6.46% | -8.96% |
+| mean net, stress | -6.28% | -5.47% | -6.46% |
+| median net, base | -43.7% | -18.0% | -21.0% |
+| hit 2x | 24.5% | 19.6% | 20.0% |
+| status | FAIL | FAIL | FAIL |
+
+Reading:
+- Not close: every lower bound is below -6%, every mean below -4%. The development edge (v2-R1 +2.93%) did not
+  survive unseen data; v2-R1 traded ~41/day vs ~22/day in development and hit 2x on 20% vs 27%.
+- Reported, not judged: the exploratory top-2-per-day variant shows +10.3% for v2/v2-R1 on 42 trades. It ranks
+  within the whole UTC day, the same look-ahead as rule R7, so it is not a tradeable result.
+- Per PREREG.md: no live spend. Record and stop. Any new model is a new pre-registration on a later window.
+- Dune credits for the pull: 6,676.6 (measured).

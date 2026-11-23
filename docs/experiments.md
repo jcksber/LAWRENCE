@@ -23,6 +23,7 @@ Mean net is per trade after costs; LB = one-sided block-bootstrap lower bound.
 tokens well but the top of the ranking only reaches about break-even to +3% after 2.5–4.5% round-trip costs;
 early-curve "signal" is mostly latency; exits beyond sell-all-at-2x didn't help.
 
-**Open:** holdout verdicts for v1, v2, v2-R1 (after 2026-11-02; PREREG.md + PREREG_AMENDMENT_1.md).
+**Holdout verdict (2026-11-22, 10-11 → 11-01, never seen before):** all three FAIL — v1 −5.28% (LB −7.31%,
+3,383 trades), v2 −4.47% (LB −6.46%, 2,640), v2-R1 −5.46% (LB −8.96%, 867). Details in decisions.md.
 **Future work (not started):** point-in-time social data (watch-list posts) and tracked wallets
 (`tracked_wallets.md`).

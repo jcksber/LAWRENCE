@@ -3,9 +3,10 @@
 A research system for trading newly launched Solana tokens (pump.fun and Raydium LaunchLab), built on
 Databricks as a Bronze/Silver/Gold lakehouse — and built so it can't fool itself.
 
-**Status (2026-10-22):** research phase complete. Three frozen models (v1, v2, v2-R1) wait on a
-pre-registered 21-day holdout (2026-10-11 → 11-01), scored once after 2026-11-02. Best development result:
-**+2.9% net per trade, 90% lower bound −0.6%** — not yet a proven edge, and the repo says so.
+**Status (2026-11-22):** research phase complete. All three frozen models (v1, v2, v2-R1) **failed** the
+pre-registered 21-day holdout (2026-10-11 → 11-01): mean net −4.5% to −5.5% per trade, every lower bound
+below −6%. The best development result (+2.9% per trade) did not survive unseen data — which is exactly what
+the holdout exists to catch. No real money was traded.
 
 ## At a glance
 
