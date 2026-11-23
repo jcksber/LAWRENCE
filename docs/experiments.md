@@ -31,3 +31,6 @@ early-curve "signal" is mostly latency; exits beyond sell-all-at-2x didn't help.
 **Post-holdout exploration (2026-11-22):** exit E3 (Jack): sell 50% of the remaining position at 2x/4x/6x/8x
 of entry, the rest at 10x; stop −20% from entry (fixed); no time limit. Notebook 08, on v2-R1 entries over
 dev + holdout. Exploratory only: the holdout is already judged, so any adoption needs a new forward window.
+**v5 (2026-11-23, plan in v5_plan.md):** E3-net target + 11 market-context features + 49 days of history vs
+baseline B0 (v2 features, old target), both judged on E3 net over 6 weekly folds: B0 −0.09% (1,927 trades),
+v5 −2.53% (7,046), v5 better in 2/6 folds → not frozen.

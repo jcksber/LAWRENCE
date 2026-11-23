@@ -2668,3 +2668,20 @@ Reading:
   history 09-13 → 11-01, +11 market-context features. New: `features/market_context.py` (2 tests),
   `simulate_schedule` returns `exit_ts` (17 ladder tests), notebooks 02d (labels + context tables) and 04j
   (B0 vs v5, 6 folds, pre-declared freeze rule).
+- **Replay parity PASS (2026-11-22): 11/11 trades, max return difference 0.0** on 50 tokens graduating 10-03 → 10-06
+  (v1 contract, notebook 07) after the re-entry-at-exit-minute fix. Next: 300-token run.
+- **Replay parity PASS at 300 tokens (2026-11-22): 55/55 trades, max return difference 0.0** (v1 contract,
+  tokens graduating 10-03 → 10-06). The decision engine reproduces the backtest exactly; it is ready to run a
+  frozen contract forward in paper mode.
+- **v5 development result (2026-11-23): DO NOT FREEZE (rule in docs/v5_plan.md).** 6 weekly folds, judged on E3 net:
+  | fold | B0 trades / mean | v5 trades / mean |
+  |---|---|---|
+  | 1 | 85 / +20.7% | 794 / −5.2% |
+  | 2 | 205 / −0.2% | 1,087 / −4.1% |
+  | 3 | 503 / −3.3% | 1,440 / −8.4% |
+  | 4 | 413 / +0.1% | 889 / −1.7% |
+  | 5 | 487 / −1.2% | 1,738 / +0.9% |
+  | 6 | 234 / +1.3% | 1,098 / +2.6% |
+  Pooled (computed from the fold table): B0 1,927 trades, −0.09%; v5 7,046 trades, −2.53%. v5 beat B0 in 2/6 folds.
+  Fails every condition. Training on the E3 net target made the top-2% cut far less selective (≈3.7× the trades) and
+  worse; market context did not compensate. Base rate for E3 over all candidates: ≈ −8.0% (02d). No tuning, per plan.

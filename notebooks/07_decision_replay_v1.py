@@ -30,7 +30,7 @@ from decision.types import RiskConfig  # noqa: E402
 from serving import contract_v1 as c1  # noqa: E402
 
 spark.conf.set("spark.sql.session.timeZone", "UTC")
-N_TOKENS = 50
+N_TOKENS = 300  # 2026-11-22: larger parity check after 50-token PASS
 GRAD_FROM, GRAD_TO = "2026-10-03", "2026-10-06"
 contract = ContractV1("../contracts/v1")          # hash check + verify_startup
 print("v1 cutoff", contract.cutoff)
