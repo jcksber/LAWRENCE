@@ -14,21 +14,38 @@ from decision.engine import Engine
 TAIL = pd.Timedelta(minutes=360)  # keep ticking 6h past the last bar so time-outs resolve
 
 
-def replay(engine: Engine, tokens: dict[str, dict]) -> pd.DataFrame:
+def replay(engine: Engine, tokens: dict[str, dict], *, after: pd.Timestamp | None = None,
+           through: pd.Timestamp | None = None,
+           resume_at: tuple[pd.Timestamp, str] | None = None) -> pd.DataFrame:
     """tokens: token_id -> {"bars": DataFrame (BAR_COLUMNS), "launch_time", "launch_venue"}.
     Calls the engine for every token EVERY MINUTE from its first bar close to its last bar close + 6h, in
     global time order (ties by token id) -- as a live runtime ticking each minute would. (2026-10-24 fix:
-    calling only at the token's own bar closes missed candidate times with no bar closing at that minute.)"""
+    calling only at the token's own bar closes missed candidate times with no bar closing at that minute.)
+    Optional UTC minute boundaries select ticks in (after, through]. resume_at retries the interrupted token tick inclusively. Bars remain available as lookback."""
+    if after is not None and resume_at is not None:
+        raise ValueError("Choose a minute boundary or an inclusive token cursor")
+    for boundary in (after, through, resume_at[0] if resume_at else None):
+        if boundary is not None and (boundary.tzinfo is None or boundary != boundary.floor("min")):
+            raise ValueError("Replay boundaries must be timezone-aware whole minutes")
     heap = []
     for tok, d in tokens.items():
         b = d["bars"].sort_values("bar_start").reset_index(drop=True)
         d["bars"] = b
         closes = b["bar_start"] + pd.Timedelta(minutes=1)
-        for t in pd.date_range(closes.min(), closes.max() + TAIL, freq="1min"):
+        first, last = closes.min(), closes.max() + TAIL
+        if after is not None:
+            first = max(first, after + pd.Timedelta(minutes=1))
+        if resume_at is not None:
+            first = max(first, resume_at[0])
+        if through is not None:
+            last = min(last, through)
+        for t in pd.date_range(first, last, freq="1min"):
             heap.append((t, tok))
     heapq.heapify(heap)
     while heap:
         now, tok = heapq.heappop(heap)
+        if resume_at is not None and (now, tok) < resume_at:
+            continue
         d = tokens[tok]
         engine.on_bar_close(tok, d["bars"], now.to_pydatetime(), launch_time=d["launch_time"],
                             launch_venue=d["launch_venue"], observed_from_launch=d.get("observed_from_launch", True))

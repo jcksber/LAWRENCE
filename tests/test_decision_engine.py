@@ -113,3 +113,18 @@ def test_reenters_at_the_exit_minute_like_the_backtest():
     eng, tr = run({"A": b}, {("A", 2): 0.3, ("A", 4): 0.3})
     enters = eng.log.frame().query("event == 'enter'")
     assert len(enters) == 2 and enters["ts"].iloc[1] == T0 + timedelta(minutes=4)
+
+
+def test_replay_split_keeps_open_position_and_matches_uninterrupted_log():
+    scores = {("A", 2): 0.3, ("A", 4): 0.3}
+    prices = bars([1.0, 1.0, 1.0, 2.5, 2.5])
+    reference, trades = run({"A": prices}, scores)
+    tokens = {"A": {"bars": prices, "launch_time": T0 - timedelta(hours=2), "launch_venue": "pumpdotfun"}}
+    engine = Engine(FakeContract(scores), PaperBroker(), RiskConfig.unlimited())
+    boundary = pd.Timestamp(T0) + pd.Timedelta(minutes=2)
+    replay(engine, tokens, through=boundary)
+    assert engine.open["A"].position_id == "p1"
+    assert len(engine.log.rows) == 1
+    replay(engine, tokens, after=boundary)
+    pd.testing.assert_frame_equal(engine.trades(), trades)
+    pd.testing.assert_frame_equal(engine.log.frame(), reference.log.frame())

@@ -9,7 +9,6 @@ One open position per token, exactly as the training/backtest rule. Every decisi
 """
 from __future__ import annotations
 
-import itertools
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -31,6 +30,8 @@ class AuditLog:
 
 
 class Engine:
+    position_type = Position
+
     def __init__(self, contract: ScoringContract, broker: Broker, risk: RiskConfig, log: AuditLog | None = None):
         self.contract, self.broker, self.risk = contract, broker, RiskGate(risk)
         self.cfg = risk
@@ -39,7 +40,7 @@ class Engine:
         self.closed: list[Position] = []
         self.paused = False
         self.killed = False
-        self._ids = itertools.count(1)
+        self.next_position_id = 1
 
     # --- controls (the only calls the supervisor agent may make) ---------------------------------------
     def pause(self, now: datetime, reason: str) -> None:
@@ -91,8 +92,9 @@ class Engine:
             return
         intent = OrderIntent(token_id, "buy", self.cfg.position_usd, float(a.price_at_t), now, "entry")
         fill = self.broker.submit(intent, now)
-        p = Position(f"p{next(self._ids)}", token_id, launch_venue, now, float(a.price_at_t), fill.price,
-                     self.cfg.position_usd, float(a.score))
+        p = self.position_type(f"p{self.next_position_id}", token_id, launch_venue, now,
+                               float(a.price_at_t), fill.price, self.cfg.position_usd, float(a.score))
+        self.next_position_id += 1
         self.open[token_id] = p
         self.risk.record_entry(now)
         self.log.write(**base, event="enter", reason="score_ge_cutoff", position_id=p.position_id,
